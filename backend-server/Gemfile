@@ -1,0 +1,16 @@
+source 'https://rubygems.org'
+
+# The lightweight web framework for our API
+gem 'sinatra'
+
+# For creating JSON responses for the Android app
+gem 'json'
+
+# The Foreign Function Interface to call our C Math Engine
+gem 'ffi'
+
+# The PostgreSQL driver to talk to our SQL database
+gem 'pg'
+
+# Optional: For better development logging
+gem 'rack-test', group: :test

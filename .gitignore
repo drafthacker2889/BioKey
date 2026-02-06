@@ -1,0 +1,15 @@
+# Compiled C Engine
+native-engine/build/*.so
+native-engine/build/*.dll
+native-engine/build/*.o
+
+# Android junk
+.gradle/
+build/
+*.iml
+local.properties
+
+# Ruby dependencies
+vendor/bundle/
+.bundle/
+*.log
