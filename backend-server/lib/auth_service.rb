@@ -1,36 +1,50 @@
 require_relative 'math_engine'
 
 class AuthService
-  # The "Thresholds" - Adjust these based on how strict you want the security to be
-  PERFECT_MATCH = 10.0   # [cite: 56]
-  SUSPICIOUS    = 20.0   # [cite: 57]
+  # Thresholds for decision logic [cite: 56, 57]
+  PERFECT_MATCH = 10.0   
+  SUSPICIOUS    = 20.0   
 
   def self.verify_login(user_id, attempt_data)
-    # 1. Fetch the stored Master Profile from SQL [cite: 164, 165]
-    # (In a real app, you'd run: SELECT avg_dwell, avg_flight FROM biometric_profiles WHERE user_id = id)
-    # For now, let's assume we have retrieved the profile array:
-    stored_profile = [90.0, 150.0, 80.0, 100.0] 
+    # 1. Fetch stored Master Profile from SQL [cite: 164]
+    result = DB.exec_params(
+      "SELECT avg_dwell_time, avg_flight_time 
+       FROM biometric_profiles 
+       WHERE user_id = $1", 
+      [user_id]
+    )
+    
+    if result.ntuples == 0
+      return { status: "ERROR", message: "No profile found" }
+    end
 
-    # 2. Use the C Engine to calculate the Euclidean Distance [cite: 55, 168]
+    # 2. Prepare the stored averages for the C Engine [cite: 166]
+    stored_profile = []
+    result.each do |row|
+      stored_profile << row['avg_dwell_time'].to_f
+      stored_profile << row['avg_flight_time'].to_f
+    end
+
+    # 3. Calculate Euclidean Distance via C Engine [cite: 55, 168]
     distance_score = MathEngine.get_score(attempt_data, stored_profile)
-    puts "Distance Score calculated by C: #{distance_score}" # [cite: 169]
+    puts "Distance Score calculated by C: #{distance_score}" [cite: 169]
 
-    # 3. Decision Logic [cite: 170]
+    # 4. Decision Logic [cite: 170]
     if distance_score < PERFECT_MATCH
-      puts "Access Granted: Perfect Match." # [cite: 171, 91]
-      update_profile(user_id, attempt_data) # Adaptive learning 
+      puts "Access Granted: Perfect Match." [cite: 91, 171]
+      update_profile(user_id, attempt_data) # Adaptive learning
       return { status: "SUCCESS", score: distance_score }
     elsif distance_score < SUSPICIOUS
-      puts "Warning: Suspicious Rhythm. 2FA Required." # [cite: 57, 92]
+      puts "Warning: Suspicious Rhythm." [cite: 92]
       return { status: "CHALLENGE", score: distance_score }
     else
-      puts "Access Denied: Imposter Detected." # [cite: 58, 93]
+      puts "Access Denied: Imposter Detected." [cite: 93]
       return { status: "DENIED", score: distance_score }
     end
   end
 
   def self.update_profile(user_id, new_data)
-    # Logic to mix the new timing into the SQL averages 
+    # Adaptive Learning: update averages in the database [cite: 59, 172]
     puts "Updating biometric profile in SQL for user #{user_id}..."
   end
 end
