@@ -7,10 +7,10 @@ require_relative 'lib/auth_service'
 # Load Database Configuration
 db_config = YAML.load_file('config/database.yml')['development']
 DB = PG.connect(
-  dbname: db_config['database'], 
-  user: db_config['user'], 
-  password: db_config['password'],
-  host: db_config['host']
+  dbname:   ENV['DB_NAME']     || db_config['database'], 
+  user:     ENV['DB_USER']     || db_config['user'], 
+  password: ENV['DB_PASSWORD'] || db_config['password'],
+  host:     ENV['DB_HOST']     || db_config['host']
 )
 
 # Route 1: The Enrollment (Training)
@@ -20,7 +20,6 @@ post '/train' do
   user_id = data['user_id']
   timings = data['timings'] # Array of [dwell, flight]
 
-  # Save each timing pair to SQL biometric_profiles table [cite: 140]
   timings.each do |t|
     DB.exec_params(
       "INSERT INTO biometric_profiles (user_id, key_pair, avg_dwell_time, avg_flight_time) 
@@ -36,7 +35,6 @@ post '/login' do
   content_type :json
   data = JSON.parse(request.body.read)
   
-  # Pass user ID and attempt timings to the AuthService logic [cite: 55, 170]
   result = AuthService.verify_login(data['user_id'], data['timings'])
   
   result.to_json

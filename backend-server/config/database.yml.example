@@ -1,6 +1,6 @@
 development:
   adapter: postgresql
   database: biokey_db
-  user: your_user
-  password: your_password
+  user: your_username_here
+  password: your_password_here
   host: localhost

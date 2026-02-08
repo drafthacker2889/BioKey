@@ -13,3 +13,6 @@ local.properties
 vendor/bundle/
 .bundle/
 *.log
+
+# Sensitive configuration
+backend-server/config/database.yml

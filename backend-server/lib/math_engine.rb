@@ -5,7 +5,7 @@ module BiometricMath
   
   # 1. Load the library we just compiled in the native-engine folder
   # On Windows, this might look for .dll; on Linux/Android, it's .so
-  ffi_lib File.expand_path('../../native-engine/build/biometric_math.so', __FILE__)
+  ffi_lib File.expand_path('../../../native-engine/build/biometric_math.so', __FILE__)
 
   # 2. Define the C function signature so Ruby knows what to send
   # calculate_distance(float* attempt, float* profile, int length)
