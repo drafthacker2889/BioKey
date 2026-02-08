@@ -6,7 +6,7 @@ CREATE TABLE users (
 
 CREATE TABLE biometric_profiles (
     user_id INT REFERENCES users(id),
-    key_pair VARCHAR(2),
+    key_pair VARCHAR(10),
     avg_flight_time FLOAT,
     std_dev_flight FLOAT,
     avg_dwell_time FLOAT,
