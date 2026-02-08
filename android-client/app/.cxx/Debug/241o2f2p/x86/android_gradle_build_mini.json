@@ -1,0 +1,27 @@
+{
+  "buildFiles": [
+    "C:\\Users\\Admin\\BioKey-Project\\android-client\\app\\src\\main\\cpp\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "C:\\Users\\Admin\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "C:\\Users\\Admin\\BioKey-Project\\android-client\\app\\.cxx\\Debug\\241o2f2p\\x86",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "C:\\Users\\Admin\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "C:\\Users\\Admin\\BioKey-Project\\android-client\\app\\.cxx\\Debug\\241o2f2p\\x86",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "biokey-native::@6890427a1f51a3e7e1df": {
+      "artifactName": "biokey-native",
+      "abi": "x86",
+      "output": "C:\\Users\\Admin\\BioKey-Project\\android-client\\app\\build\\intermediates\\cxx\\Debug\\241o2f2p\\obj\\x86\\libbiokey-native.so",
+      "runtimeFiles": []
+    }
+  }
+}

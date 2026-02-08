@@ -1,0 +1,7 @@
+[
+{
+  "directory": "C:/Users/Admin/BioKey-Project/android-client/app/.cxx/Debug/241o2f2p/x86",
+  "command": "C:\\Users\\Admin\\AppData\\Local\\Android\\Sdk\\ndk\\25.1.8937393\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=i686-none-linux-android24 --sysroot=C:/Users/Admin/AppData/Local/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dbiokey_native_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -o CMakeFiles\\biokey-native.dir\\native-lib.cpp.o -c C:\\Users\\Admin\\BioKey-Project\\android-client\\app\\src\\main\\cpp\\native-lib.cpp",
+  "file": "C:\\Users\\Admin\\BioKey-Project\\android-client\\app\\src\\main\\cpp\\native-lib.cpp"
+}
+]

@@ -4,6 +4,7 @@
 // This function calculates the distance between the current attempt and the profile
 // length: the number of data points (e.g., 20 for a 10-character password)
 float calculate_distance(float* attempt, float* profile, int length) {
+    if (!attempt || !profile) return -1.0f;
     float sum = 0.0;
     
     for(int i = 0; i < length; i++) {

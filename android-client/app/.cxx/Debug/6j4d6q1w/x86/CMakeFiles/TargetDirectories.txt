@@ -1,0 +1,3 @@
+C:/Users/Admin/BioKey-Project/android-client/app/.cxx/Debug/6j4d6q1w/x86/CMakeFiles/biokey-native.dir
+C:/Users/Admin/BioKey-Project/android-client/app/.cxx/Debug/6j4d6q1w/x86/CMakeFiles/edit_cache.dir
+C:/Users/Admin/BioKey-Project/android-client/app/.cxx/Debug/6j4d6q1w/x86/CMakeFiles/rebuild_cache.dir

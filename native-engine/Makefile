@@ -1,6 +1,6 @@
 # Variables
 CC = gcc
-CFLAGS = -fPIC -shared
+CFLAGS = -fPIC -shared -O3 -Wall
 TARGET = build/biometric_math.so
 SRC = src/biometric_math.c
 

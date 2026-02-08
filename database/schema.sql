@@ -10,7 +10,8 @@ CREATE TABLE biometric_profiles (
     avg_flight_time FLOAT,
     std_dev_flight FLOAT,
     avg_dwell_time FLOAT,
-    sample_count INT DEFAULT 0 
+    sample_count INT DEFAULT 0,
+    UNIQUE (user_id, key_pair) 
 );
 
 CREATE TABLE access_logs (
