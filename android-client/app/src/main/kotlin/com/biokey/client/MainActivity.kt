@@ -11,24 +11,29 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.biokey.client.ui.theme.BioKeyTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,7 +48,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            BioKeyTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     BioKeyScreen(nativeStatus = stringFromJNI())
                 }
@@ -66,99 +71,153 @@ fun BioKeyScreen(nativeStatus: String) {
     var serverUrl by rememberSaveable { mutableStateOf(defaultBackendUrl) }
     var userId by rememberSaveable { mutableStateOf("1") }
     var sampleText by rememberSaveable { mutableStateOf("biokey") }
-    var resultText by rememberSaveable { mutableStateOf("Ready") }
+    var resultText by rememberSaveable { mutableStateOf("Ready. Tap Train to create/update profile.") }
     var isLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val parsedUserId by remember(userId) { derivedStateOf { userId.toIntOrNull() } }
+    val normalizedSample by remember(sampleText) { derivedStateOf { sampleText.lowercase().filter { it.isLetterOrDigit() } } }
+    val isSampleValid by remember(normalizedSample) { derivedStateOf { normalizedSample.length >= 2 } }
+    val canSubmit by remember(serverUrl, parsedUserId, isSampleValid, isLoading) {
+        derivedStateOf {
+            serverUrl.startsWith("http://") || serverUrl.startsWith("https://")
+        && parsedUserId != null
+        && isSampleValid
+        && !isLoading
+        }
+    }
+
+    fun submit(endpoint: String) {
+        val safeUserId = parsedUserId
+        if (safeUserId == null) {
+            resultText = "User ID must be a number"
+            return
+        }
+        val timings = buildTimings(sampleText)
+        if (timings.isEmpty()) {
+            resultText = "Sample Text must have at least 2 letters/numbers"
+            return
+        }
+        scope.launch {
+            isLoading = true
+            resultText = ApiClient.postTimings(serverUrl, endpoint, safeUserId, timings)
+            isLoading = false
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(text = "BioKey Client", style = MaterialTheme.typography.headlineSmall)
-
-        OutlinedTextField(
-            value = serverUrl,
-            onValueChange = { serverUrl = it },
-            label = { Text("Server URL") },
-            modifier = Modifier.fillMaxWidth()
+        Text(text = "BioKey", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            text = "Train your typing profile, then verify login rhythm.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        OutlinedTextField(
-            value = userId,
-            onValueChange = { userId = it },
-            label = { Text("User ID") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(text = "Connection", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    value = serverUrl,
+                    onValueChange = { serverUrl = it.trim() },
+                    label = { Text("Server URL") },
+                    supportingText = { Text("Phone: use PC Wi-Fi IP. Emulator: use 10.0.2.2") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
 
-        OutlinedTextField(
-            value = sampleText,
-            onValueChange = { sampleText = it },
-            label = { Text("Sample Text") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(text = "Input", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    value = userId,
+                    onValueChange = { userId = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("User ID") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = {
+                        if (parsedUserId == null) {
+                            Text("Enter a numeric user id")
+                        }
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = sampleText,
+                    onValueChange = { sampleText = it },
+                    label = { Text("Sample Text") },
+                    supportingText = { Text("Needs at least 2 letters/numbers. Current pairs: ${buildTimings(sampleText).size}") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             Button(
-                onClick = {
-                    val parsedUserId = userId.toIntOrNull()
-                    if (parsedUserId == null) {
-                        resultText = "User ID must be a number"
-                        return@Button
-                    }
-                    val timings = buildTimings(sampleText)
-                    if (timings.isEmpty()) {
-                        resultText = "Sample Text must have at least 2 letters/numbers"
-                        return@Button
-                    }
-                    scope.launch {
-                        isLoading = true
-                        resultText = ApiClient.postTimings(serverUrl, "/train", parsedUserId, timings)
-                        isLoading = false
-                    }
-                }
+                onClick = { submit("/train") },
+                enabled = canSubmit,
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Train")
             }
-
             Button(
-                onClick = {
-                    val parsedUserId = userId.toIntOrNull()
-                    if (parsedUserId == null) {
-                        resultText = "User ID must be a number"
-                        return@Button
-                    }
-                    val timings = buildTimings(sampleText)
-                    if (timings.isEmpty()) {
-                        resultText = "Sample Text must have at least 2 letters/numbers"
-                        return@Button
-                    }
-                    scope.launch {
-                        isLoading = true
-                        resultText = ApiClient.postTimings(serverUrl, "/login", parsedUserId, timings)
-                        isLoading = false
-                    }
-                }
+                onClick = { submit("/login") },
+                enabled = canSubmit,
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Login")
             }
         }
 
         if (isLoading) {
-            CircularProgressIndicator()
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CircularProgressIndicator()
+                Text("Sending request...")
+            }
         }
 
-        Text(text = "Result: $resultText")
-        Text(text = "Native: $nativeStatus")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Result", style = MaterialTheme.typography.titleMedium)
+                Text(resultText, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+
+        Text(
+            text = "Native status: $nativeStatus",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
 @Preview(showBackground = true)
 @Composable
 fun BioKeyPreview() {
-    MaterialTheme {
+    BioKeyTheme {
         BioKeyScreen(nativeStatus = "Hello from C++")
     }
 }
