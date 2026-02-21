@@ -5,6 +5,9 @@ require 'yaml'
 require 'logger'
 require_relative 'lib/auth_service'
 
+set :bind, '0.0.0.0'
+set :port, 4567
+
 # Configure logging
 $logger = Logger.new(STDOUT)
 $logger.level = Logger::INFO
@@ -41,6 +44,16 @@ def json_error(message, status_code = 500)
   { status: "ERROR", message: message }.to_json
 end
 
+def ensure_user_exists(user_id)
+  existing = DB.exec_params("SELECT id FROM users WHERE id = $1 LIMIT 1", [user_id])
+  return if existing.ntuples > 0
+
+  DB.exec_params(
+    "INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)",
+    [user_id, "user_#{user_id}", "demo_password_hash"]
+  )
+end
+
 # Route 1: The Enrollment (Training)
 post '/train' do
   content_type :json
@@ -52,6 +65,8 @@ post '/train' do
     if user_id.nil? || timings.nil? || !timings.is_a?(Array)
        return json_error("Invalid input data", 400)
     end
+
+     ensure_user_exists(user_id)
 
     timings.each do |t|
       # Use ON CONFLICT to update the existing rhythm and increment the count
@@ -82,6 +97,10 @@ post '/train' do
 end
 
 # Route 2: The Login (Verification)
+get '/login' do
+  "Hello World"
+end
+
 post '/login' do
   content_type :json
   begin
