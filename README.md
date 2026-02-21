@@ -66,7 +66,7 @@ development:
   adapter: postgresql
   database: biokey_db
   user: postgres
-  password: tiger
+  password: <set-your-password>
   host: localhost
 ```
 
@@ -76,12 +76,13 @@ Then create DB and run schema from `database/schema.sql`.
 `database/docker-compose.yml` is configured for:
 - DB: `biokey_db`
 - User: `postgres`
-- Password: `tiger`
+- Password: from `POSTGRES_PASSWORD` env var (default placeholder: `change_me`)
 - Port: `5432`
 
 Start it:
 ```bash
 cd database
+set POSTGRES_PASSWORD=<set-your-password>
 docker compose up -d
 ```
 

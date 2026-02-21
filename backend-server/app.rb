@@ -22,7 +22,7 @@ end
 
 DB_NAME = ENV['DB_NAME'] || db_config['database'] || 'biokey_db'
 DB_USER = ENV['DB_USER'] || db_config['user'] || 'postgres'
-DB_PASS = ENV['DB_PASSWORD'] || db_config['password'] || 'tiger'
+DB_PASS = ENV['DB_PASSWORD'] || db_config['password'] || 'change_me'
 DB_HOST = ENV['DB_HOST'] || db_config['host'] || 'localhost'
 
 begin
