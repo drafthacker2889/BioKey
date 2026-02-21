@@ -134,12 +134,27 @@ This pairing is already fixed in `android-client/app/build.gradle.kts`.
 
 ## 4) Using Android App
 
-The app screen includes:
-- **Server URL**
-- **User ID**
-- **Sample Text**
-- **Train** button
-- **Login** button
+The app now uses a multi-screen flow:
+- **Login Screen** (professional login UI)
+  - Server URL
+  - User ID
+  - Typing phrase
+  - Login button
+  - Popup/snackbar login message
+- **Train Screen** (separate screen)
+  - Server URL
+  - User ID
+  - Typing phrase
+  - Train button
+- **Home Screen**
+  - Shown after successful login
+  - Navigation to Train
+  - Logout
+
+### Login + Auto-Train Behavior
+- A successful login (`status = SUCCESS`) automatically triggers an additional `/train` call.
+- This means successful logins are also counted as training samples.
+- Login result is shown as a popup/snackbar and in the Result card.
 
 Current default backend URL comes from:
 - `android-client/app/src/main/res/values/strings.xml`
@@ -210,6 +225,7 @@ Hello World
 - Native label `"Hello from C++"` in the app is a **status string from JNI**, not an error.
 - `/train` foreign-key failure was fixed by ensuring `users` row exists for incoming `user_id`.
 - SQL seeds file (`database/seeds.sql`) is currently empty.
+- Android source is committed; generated artifacts (`.idea`, `.cxx`, build outputs) are ignored.
 
 ---
 

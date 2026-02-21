@@ -1,1 +1,0 @@
-C:\Users\Admin\BioKey-Project\android-client\app\src\main\cpp\CMakeLists.txt

@@ -5,7 +5,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,17 +16,18 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -65,152 +65,296 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+enum class AppScreen {
+    LOGIN,
+    TRAIN,
+    HOME
+}
+
 @Composable
 fun BioKeyScreen(nativeStatus: String) {
     val defaultBackendUrl = stringResource(id = R.string.backend_url)
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    var currentScreen by rememberSaveable { mutableStateOf(AppScreen.LOGIN) }
     var serverUrl by rememberSaveable { mutableStateOf(defaultBackendUrl) }
     var userId by rememberSaveable { mutableStateOf("1") }
     var sampleText by rememberSaveable { mutableStateOf("biokey") }
-    var resultText by rememberSaveable { mutableStateOf("Ready. Tap Train to create/update profile.") }
+    var resultText by rememberSaveable { mutableStateOf("Ready") }
+    var homeText by rememberSaveable { mutableStateOf("Welcome") }
     var isLoading by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val parsedUserId by remember(userId) { derivedStateOf { userId.toIntOrNull() } }
-    val normalizedSample by remember(sampleText) { derivedStateOf { sampleText.lowercase().filter { it.isLetterOrDigit() } } }
-    val isSampleValid by remember(normalizedSample) { derivedStateOf { normalizedSample.length >= 2 } }
-    val canSubmit by remember(serverUrl, parsedUserId, isSampleValid, isLoading) {
-        derivedStateOf {
-            serverUrl.startsWith("http://") || serverUrl.startsWith("https://")
-        && parsedUserId != null
-        && isSampleValid
-        && !isLoading
-        }
-    }
 
-    fun submit(endpoint: String) {
-        val safeUserId = parsedUserId
-        if (safeUserId == null) {
-            resultText = "User ID must be a number"
-            return
-        }
+    fun parseInputOrNull(): Pair<Int, List<Timing>>? {
+        val parsedUserId = userId.toIntOrNull() ?: return null
         val timings = buildTimings(sampleText)
         if (timings.isEmpty()) {
-            resultText = "Sample Text must have at least 2 letters/numbers"
+            return null
+        }
+        return parsedUserId to timings
+    }
+
+    fun doTrain() {
+        val parsed = parseInputOrNull()
+        if (parsed == null) {
+            resultText = "Use numeric User ID and sample text with at least 2 letters/numbers"
             return
         }
+        val (safeUserId, timings) = parsed
         scope.launch {
             isLoading = true
-            resultText = ApiClient.postTimings(serverUrl, endpoint, safeUserId, timings)
+            val trainResult = ApiClient.postTimings(serverUrl, "/train", safeUserId, timings)
+            resultText = "HTTP ${trainResult.statusCode}: ${trainResult.body}"
+            snackbarHostState.showSnackbar("Train result: ${trainResult.statusCode}")
             isLoading = false
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text(text = "BioKey", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            text = "Train your typing profile, then verify login rhythm.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(text = "Connection", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = { serverUrl = it.trim() },
-                    label = { Text("Server URL") },
-                    supportingText = { Text("Phone: use PC Wi-Fi IP. Emulator: use 10.0.2.2") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+    fun doLogin() {
+        val parsed = parseInputOrNull()
+        if (parsed == null) {
+            resultText = "Use numeric User ID and sample text with at least 2 letters/numbers"
+            return
         }
+        val (safeUserId, timings) = parsed
+        scope.launch {
+            isLoading = true
+            val loginResult = ApiClient.postTimings(serverUrl, "/login", safeUserId, timings)
+            val loginStatus = parseBackendStatus(loginResult.body)
+            resultText = "HTTP ${loginResult.statusCode}: ${loginResult.body}"
+            snackbarHostState.showSnackbar("Login: ${loginStatus ?: "UNKNOWN"}")
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(text = "Input", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    value = userId,
-                    onValueChange = { userId = it.filter { ch -> ch.isDigit() } },
-                    label = { Text("User ID") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    supportingText = {
-                        if (parsedUserId == null) {
-                            Text("Enter a numeric user id")
-                        }
-                    },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = sampleText,
-                    onValueChange = { sampleText = it },
-                    label = { Text("Sample Text") },
-                    supportingText = { Text("Needs at least 2 letters/numbers. Current pairs: ${buildTimings(sampleText).size}") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+            if (loginStatus == "SUCCESS") {
+                val trainResult = ApiClient.postTimings(serverUrl, "/train", safeUserId, timings)
+                homeText = "Logged in as user $safeUserId"
+                currentScreen = AppScreen.HOME
+                resultText = "Login OK. Auto-train: HTTP ${trainResult.statusCode}"
+                snackbarHostState.showSnackbar("Successful login counted as training")
             }
-        }
 
+            isLoading = false
+        }
+    }
+
+    Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { innerPadding ->
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(innerPadding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            when (currentScreen) {
+                AppScreen.LOGIN -> LoginScreen(
+                    nativeStatus = nativeStatus,
+                    serverUrl = serverUrl,
+                    onServerUrlChange = { serverUrl = it.trim() },
+                    userId = userId,
+                    onUserIdChange = { userId = it.filter(Char::isDigit) },
+                    sampleText = sampleText,
+                    onSampleTextChange = { sampleText = it },
+                    isLoading = isLoading,
+                    onLogin = { doLogin() },
+                    onGoTrain = { currentScreen = AppScreen.TRAIN },
+                    resultText = resultText
+                )
+
+                AppScreen.TRAIN -> TrainScreen(
+                    serverUrl = serverUrl,
+                    onServerUrlChange = { serverUrl = it.trim() },
+                    userId = userId,
+                    onUserIdChange = { userId = it.filter(Char::isDigit) },
+                    sampleText = sampleText,
+                    onSampleTextChange = { sampleText = it },
+                    isLoading = isLoading,
+                    onTrain = { doTrain() },
+                    onBack = { currentScreen = AppScreen.LOGIN },
+                    resultText = resultText
+                )
+
+                AppScreen.HOME -> HomeScreen(
+                    homeText = homeText,
+                    onTrain = { currentScreen = AppScreen.TRAIN },
+                    onLogout = { currentScreen = AppScreen.LOGIN },
+                    resultText = resultText
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LoginScreen(
+    nativeStatus: String,
+    serverUrl: String,
+    onServerUrlChange: (String) -> Unit,
+    userId: String,
+    onUserIdChange: (String) -> Unit,
+    sampleText: String,
+    onSampleTextChange: (String) -> Unit,
+    isLoading: Boolean,
+    onLogin: () -> Unit,
+    onGoTrain: () -> Unit,
+    resultText: String
+) {
+    Text("BioKey Login", style = MaterialTheme.typography.headlineMedium)
+    Text(
+        "Secure rhythm-based authentication",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    InputCard(
+        serverUrl = serverUrl,
+        onServerUrlChange = onServerUrlChange,
+        userId = userId,
+        onUserIdChange = onUserIdChange,
+        sampleText = sampleText,
+        onSampleTextChange = onSampleTextChange
+    )
+
+    Button(onClick = onLogin, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+        Text("Login")
+    }
+    Button(onClick = onGoTrain, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+        Text("Open Train Screen")
+    }
+
+    if (isLoading) {
+        CircularProgressIndicator()
+    }
+
+    ResultCard(resultText = resultText)
+    Text(
+        text = "Native status: $nativeStatus",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+fun TrainScreen(
+    serverUrl: String,
+    onServerUrlChange: (String) -> Unit,
+    userId: String,
+    onUserIdChange: (String) -> Unit,
+    sampleText: String,
+    onSampleTextChange: (String) -> Unit,
+    isLoading: Boolean,
+    onTrain: () -> Unit,
+    onBack: () -> Unit,
+    resultText: String
+) {
+    Text("Training", style = MaterialTheme.typography.headlineMedium)
+    Text(
+        "Build your typing profile",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    InputCard(
+        serverUrl = serverUrl,
+        onServerUrlChange = onServerUrlChange,
+        userId = userId,
+        onUserIdChange = onUserIdChange,
+        sampleText = sampleText,
+        onSampleTextChange = onSampleTextChange
+    )
+
+    Button(onClick = onTrain, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+        Text("Train Now")
+    }
+    Button(onClick = onBack, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+        Text("Back to Login")
+    }
+
+    if (isLoading) {
+        CircularProgressIndicator()
+    }
+
+    ResultCard(resultText = resultText)
+}
+
+@Composable
+fun HomeScreen(
+    homeText: String,
+    onTrain: () -> Unit,
+    onLogout: () -> Unit,
+    resultText: String
+) {
+    Text("Home", style = MaterialTheme.typography.headlineMedium)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(homeText, style = MaterialTheme.typography.titleMedium)
+            Text("Login successful", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+
+    Button(onClick = onTrain, modifier = Modifier.fillMaxWidth()) {
+        Text("Go to Train Screen")
+    }
+    Button(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
+        Text("Logout")
+    }
+
+    ResultCard(resultText = resultText)
+}
+
+@Composable
+fun InputCard(
+    serverUrl: String,
+    onServerUrlChange: (String) -> Unit,
+    userId: String,
+    onUserIdChange: (String) -> Unit,
+    sampleText: String,
+    onSampleTextChange: (String) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Button(
-                onClick = { submit("/train") },
-                enabled = canSubmit,
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = onServerUrlChange,
+                label = { Text("Server URL") },
+                supportingText = { Text("Phone: PC Wi-Fi IP | Emulator: 10.0.2.2") },
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Train")
-            }
-            Button(
-                onClick = { submit("/login") },
-                enabled = canSubmit,
+            )
+
+            OutlinedTextField(
+                value = userId,
+                onValueChange = onUserIdChange,
+                label = { Text("User ID") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Login")
-            }
-        }
+            )
 
-        if (isLoading) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                CircularProgressIndicator()
-                Text("Sending request...")
-            }
+            OutlinedTextField(
+                value = sampleText,
+                onValueChange = onSampleTextChange,
+                label = { Text("Typing Phrase") },
+                supportingText = { Text("Current key pairs: ${buildTimings(sampleText).size}") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
+    }
+}
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("Result", style = MaterialTheme.typography.titleMedium)
-                Text(resultText, style = MaterialTheme.typography.bodyMedium)
-            }
+@Composable
+fun ResultCard(resultText: String) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Result", style = MaterialTheme.typography.titleMedium)
+            Text(resultText, style = MaterialTheme.typography.bodyMedium)
         }
-
-        Text(
-            text = "Native status: $nativeStatus",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -227,6 +371,19 @@ data class Timing(
     val dwell: Float,
     val flight: Float
 )
+
+data class ApiResult(
+    val statusCode: Int,
+    val body: String
+)
+
+fun parseBackendStatus(body: String): String? {
+    return try {
+        JSONObject(body).optString("status", null)
+    } catch (_: Exception) {
+        null
+    }
+}
 
 fun buildTimings(sampleText: String): List<Timing> {
     val normalized = sampleText.lowercase().filter { it.isLetterOrDigit() }
@@ -251,7 +408,7 @@ object ApiClient {
         endpoint: String,
         userId: Int,
         timings: List<Timing>
-    ): String = withContext(Dispatchers.IO) {
+    ): ApiResult = withContext(Dispatchers.IO) {
         val trimmed = baseUrl.trimEnd('/')
         val url = URL("$trimmed$endpoint")
         val connection = (url.openConnection() as HttpURLConnection)
@@ -289,9 +446,9 @@ object ApiClient {
                 }
             } ?: ""
 
-            "HTTP $statusCode: $responseBody"
+            ApiResult(statusCode = statusCode, body = responseBody)
         } catch (exception: Exception) {
-            "Request failed: ${exception.message}"
+            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
         } finally {
             connection.disconnect()
         }

@@ -8,6 +8,9 @@ native-engine/build/*.o
 build/
 *.iml
 local.properties
+android-client/.idea/
+android-client/app/.cxx/
+android-client/**/build/
 
 # Ruby dependencies
 vendor/bundle/
