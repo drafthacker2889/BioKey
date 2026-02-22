@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import android.os.SystemClock
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -80,14 +81,16 @@ fun BioKeyScreen(nativeStatus: String) {
     var currentScreen by rememberSaveable { mutableStateOf(AppScreen.LOGIN) }
     var serverUrl by rememberSaveable { mutableStateOf(defaultBackendUrl) }
     var userId by rememberSaveable { mutableStateOf("1") }
-    var sampleText by rememberSaveable { mutableStateOf("biokey") }
+    var sampleText by rememberSaveable { mutableStateOf("") }
+    var sampleKeyPressTimes by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var capturedTimings by remember { mutableStateOf<List<Timing>>(emptyList()) }
     var resultText by rememberSaveable { mutableStateOf("Ready") }
     var homeText by rememberSaveable { mutableStateOf("Welcome") }
     var isLoading by remember { mutableStateOf(false) }
 
     fun parseInputOrNull(): Pair<Int, List<Timing>>? {
         val parsedUserId = userId.toIntOrNull() ?: return null
-        val timings = buildTimings(sampleText)
+        val timings = capturedTimings
         if (timings.isEmpty()) {
             return null
         }
@@ -153,7 +156,12 @@ fun BioKeyScreen(nativeStatus: String) {
                     userId = userId,
                     onUserIdChange = { userId = it.filter(Char::isDigit) },
                     sampleText = sampleText,
-                    onSampleTextChange = { sampleText = it },
+                    sampleKeyPressTimes = sampleKeyPressTimes,
+                    onSampleTextChange = { updatedText, updatedKeyPressTimes ->
+                        sampleText = updatedText
+                        sampleKeyPressTimes = updatedKeyPressTimes
+                        capturedTimings = buildTimingsFromCapturedInput(updatedText, updatedKeyPressTimes)
+                    },
                     isLoading = isLoading,
                     onLogin = { doLogin() },
                     onGoTrain = { currentScreen = AppScreen.TRAIN },
@@ -166,7 +174,12 @@ fun BioKeyScreen(nativeStatus: String) {
                     userId = userId,
                     onUserIdChange = { userId = it.filter(Char::isDigit) },
                     sampleText = sampleText,
-                    onSampleTextChange = { sampleText = it },
+                    sampleKeyPressTimes = sampleKeyPressTimes,
+                    onSampleTextChange = { updatedText, updatedKeyPressTimes ->
+                        sampleText = updatedText
+                        sampleKeyPressTimes = updatedKeyPressTimes
+                        capturedTimings = buildTimingsFromCapturedInput(updatedText, updatedKeyPressTimes)
+                    },
                     isLoading = isLoading,
                     onTrain = { doTrain() },
                     onBack = { currentScreen = AppScreen.LOGIN },
@@ -192,7 +205,8 @@ fun LoginScreen(
     userId: String,
     onUserIdChange: (String) -> Unit,
     sampleText: String,
-    onSampleTextChange: (String) -> Unit,
+    sampleKeyPressTimes: List<Long>,
+    onSampleTextChange: (String, List<Long>) -> Unit,
     isLoading: Boolean,
     onLogin: () -> Unit,
     onGoTrain: () -> Unit,
@@ -211,6 +225,7 @@ fun LoginScreen(
         userId = userId,
         onUserIdChange = onUserIdChange,
         sampleText = sampleText,
+        sampleKeyPressTimes = sampleKeyPressTimes,
         onSampleTextChange = onSampleTextChange
     )
 
@@ -240,7 +255,8 @@ fun TrainScreen(
     userId: String,
     onUserIdChange: (String) -> Unit,
     sampleText: String,
-    onSampleTextChange: (String) -> Unit,
+    sampleKeyPressTimes: List<Long>,
+    onSampleTextChange: (String, List<Long>) -> Unit,
     isLoading: Boolean,
     onTrain: () -> Unit,
     onBack: () -> Unit,
@@ -259,6 +275,7 @@ fun TrainScreen(
         userId = userId,
         onUserIdChange = onUserIdChange,
         sampleText = sampleText,
+        sampleKeyPressTimes = sampleKeyPressTimes,
         onSampleTextChange = onSampleTextChange
     )
 
@@ -308,7 +325,8 @@ fun InputCard(
     userId: String,
     onUserIdChange: (String) -> Unit,
     sampleText: String,
-    onSampleTextChange: (String) -> Unit
+    sampleKeyPressTimes: List<Long>,
+    onSampleTextChange: (String, List<Long>) -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -335,9 +353,20 @@ fun InputCard(
 
             OutlinedTextField(
                 value = sampleText,
-                onValueChange = onSampleTextChange,
+                onValueChange = { newText ->
+                    val updatedPressTimes = updateKeyPressTimes(
+                        previousText = sampleText,
+                        nextText = newText,
+                        previousPressTimes = sampleKeyPressTimes,
+                        nowMillis = SystemClock.elapsedRealtime()
+                    )
+                    onSampleTextChange(newText, updatedPressTimes)
+                },
                 label = { Text("Typing Phrase") },
-                supportingText = { Text("Current key pairs: ${buildTimings(sampleText).size}") },
+                supportingText = {
+                    val capturedPairs = buildTimingsFromCapturedInput(sampleText, sampleKeyPressTimes).size
+                    Text("Type naturally. Captured key pairs: $capturedPairs")
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -398,6 +427,57 @@ fun buildTimings(sampleText: String): List<Timing> {
         val dwell = 80f + ((first.code + (index * 7)) % 90)
         val flight = 40f + ((second.code + (index * 11)) % 80)
         timings.add(Timing(pair = "$first$second", dwell = dwell, flight = flight))
+    }
+    return timings
+}
+
+fun normalizeTextForCapture(value: String): String {
+    return value.lowercase().filter { it.isLetterOrDigit() }
+}
+
+fun updateKeyPressTimes(
+    previousText: String,
+    nextText: String,
+    previousPressTimes: List<Long>,
+    nowMillis: Long
+): List<Long> {
+    val oldNorm = normalizeTextForCapture(previousText)
+    val newNorm = normalizeTextForCapture(nextText)
+
+    if (newNorm.isEmpty()) {
+        return emptyList()
+    }
+
+    var commonPrefixLength = 0
+    val minLength = minOf(oldNorm.length, newNorm.length)
+    while (commonPrefixLength < minLength && oldNorm[commonPrefixLength] == newNorm[commonPrefixLength]) {
+        commonPrefixLength++
+    }
+
+    val updated = previousPressTimes.take(commonPrefixLength).toMutableList()
+    var timeCursor = if (updated.isEmpty()) nowMillis else maxOf(nowMillis, updated.last() + 1)
+
+    for (index in commonPrefixLength until newNorm.length) {
+        updated.add(timeCursor)
+        timeCursor += 1
+    }
+
+    return updated
+}
+
+fun buildTimingsFromCapturedInput(text: String, pressTimes: List<Long>): List<Timing> {
+    val normalized = normalizeTextForCapture(text)
+    if (normalized.length < 2 || pressTimes.size < normalized.length) {
+        return emptyList()
+    }
+
+    val timings = mutableListOf<Timing>()
+    for (index in 0 until normalized.length - 1) {
+        val pair = "${normalized[index]}${normalized[index + 1]}"
+        val rawFlight = (pressTimes[index + 1] - pressTimes[index]).toFloat()
+        val flight = rawFlight.coerceIn(20f, 500f)
+        val dwell = (flight * 0.65f).coerceIn(30f, 220f)
+        timings.add(Timing(pair = pair, dwell = dwell, flight = flight))
     }
     return timings
 }
