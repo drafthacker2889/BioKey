@@ -19,3 +19,6 @@ vendor/bundle/
 
 # Sensitive configuration
 backend-server/config/database.yml
+
+# Local exports
+exports/

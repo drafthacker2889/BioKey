@@ -2,6 +2,7 @@ class DashboardService
   def initialize(db:, uptime_seconds:)
     @db = db
     @uptime_seconds = uptime_seconds
+    @access_logs_columns = nil
   end
 
   def overview(can_control: false, is_admin: false)
@@ -44,11 +45,90 @@ class DashboardService
     end
   end
 
-  def latest_auth_events(limit: 50)
+  def latest_live_events(limit: 50)
+    columns = access_logs_columns
+    auth_score_sql = columns.include?('distance_score') ? 'al.distance_score' : 'NULL::float'
+    auth_ip_sql = columns.include?('ip_address') ? 'al.ip_address' : 'NULL::text'
+    auth_request_id_sql = columns.include?('request_id') ? 'al.request_id' : 'NULL::text'
+
     rows = @db.exec_params(
-      "SELECT attempted_at, user_id, verdict, score, ip_address, request_id
-       FROM access_logs
-       ORDER BY attempted_at DESC
+      "SELECT * FROM (
+         SELECT
+           'BIO'::text AS event_type,
+           ba.created_at AS event_time,
+           ba.id AS event_id,
+           ba.user_id AS user_id,
+           u.username AS username,
+           ba.outcome AS result,
+           ba.score AS score,
+           ba.coverage_ratio AS coverage_ratio,
+           ba.matched_pairs AS matched_pairs,
+           ba.ip_address AS ip_address,
+           ba.request_id AS request_id,
+           ba.label AS label
+         FROM biometric_attempts ba
+         LEFT JOIN users u ON u.id = ba.user_id
+
+         UNION ALL
+
+         SELECT
+           'AUTH'::text AS event_type,
+           al.attempted_at AS event_time,
+           al.id AS event_id,
+           al.user_id AS user_id,
+           u.username AS username,
+           al.verdict AS result,
+           #{auth_score_sql} AS score,
+           NULL::float AS coverage_ratio,
+           NULL::int AS matched_pairs,
+           #{auth_ip_sql} AS ip_address,
+           #{auth_request_id_sql} AS request_id,
+           NULL::text AS label
+         FROM access_logs al
+         LEFT JOIN users u ON u.id = al.user_id
+         WHERE al.verdict IN ('AUTH_FAIL', 'AUTH_LOCK', 'AUTH_RATE')
+       ) AS combined
+       ORDER BY event_time DESC
+       LIMIT $1",
+      [limit]
+    )
+
+    rows.map do |row|
+      {
+        event_type: row['event_type'],
+        event_time: row['event_time'],
+        event_id: row['event_id']&.to_i,
+        user_id: row['user_id']&.to_i,
+        username: row['username'],
+        result: row['result'],
+        score: row['score']&.to_f,
+        coverage_ratio: row['coverage_ratio']&.to_f,
+        matched_pairs: row['matched_pairs']&.to_i,
+        ip_address: row['ip_address'],
+        request_id: row['request_id'],
+        label: row['label']
+      }
+    end
+  end
+
+  def latest_auth_events(limit: 50)
+    columns = access_logs_columns
+    score_sql = columns.include?('distance_score') ? 'al.distance_score' : 'NULL'
+    ip_sql = columns.include?('ip_address') ? 'al.ip_address' : 'NULL::text'
+    request_id_sql = columns.include?('request_id') ? 'al.request_id' : 'NULL::text'
+
+    rows = @db.exec_params(
+      "SELECT al.attempted_at,
+              al.user_id,
+              u.username AS username,
+              al.verdict,
+              #{score_sql} AS score,
+              #{ip_sql} AS ip_address,
+              #{request_id_sql} AS request_id
+       FROM access_logs al
+       LEFT JOIN users u ON u.id = al.user_id
+       WHERE al.verdict IN ('AUTH_FAIL', 'AUTH_LOCK', 'AUTH_RATE')
+       ORDER BY al.attempted_at DESC
        LIMIT $1",
       [limit]
     )
@@ -57,6 +137,7 @@ class DashboardService
       {
         attempted_at: row['attempted_at'],
         user_id: row['user_id']&.to_i,
+        username: row['username'],
         verdict: row['verdict'],
         score: row['score']&.to_f,
         ip_address: row['ip_address'],
@@ -163,5 +244,21 @@ class DashboardService
        WHERE verdict IN #{verdict_sql}
          AND attempted_at > #{cutoff_sql}"
     )[0]['c'].to_i
+  end
+
+  def access_logs_columns
+    return @access_logs_columns unless @access_logs_columns.nil?
+
+    @access_logs_columns = begin
+      rows = @db.exec(
+        "SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'access_logs'"
+      )
+      rows.map { |row| row['column_name'] }
+    rescue PG::Error
+      []
+    end
   end
 end

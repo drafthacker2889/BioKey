@@ -3,7 +3,6 @@ const overviewBox = document.getElementById('overviewBox');
 const userBox = document.getElementById('userBox');
 const controlBox = document.getElementById('controlBox');
 const feedBody = document.getElementById('feedBody');
-const authFeedBody = document.getElementById('authFeedBody');
 const statusLine = document.getElementById('statusLine');
 const overviewGrid = document.getElementById('overviewGrid');
 const outcomesList = document.getElementById('outcomesList');
@@ -102,6 +101,22 @@ function badgeClassForVerdict(verdict) {
   return '';
 }
 
+function badgeClassForResult(result, eventType) {
+  if (String(eventType || '').toUpperCase() === 'AUTH') return badgeClassForVerdict(result);
+  return badgeClassForOutcome(result);
+}
+
+function rowClassForResult(result, eventType) {
+  const type = String(eventType || '').toUpperCase();
+  if (type === 'AUTH') {
+    const normalized = String(result || '').toUpperCase();
+    if (normalized === 'AUTH_FAIL') return 'denied';
+    if (normalized === 'AUTH_LOCK' || normalized === 'AUTH_RATE') return 'challenge';
+    return '';
+  }
+  return rowClassForOutcome(result);
+}
+
 function renderOverview(payload) {
   if (!overviewGrid || !outcomesList) return;
 
@@ -132,28 +147,34 @@ function renderOverview(payload) {
   outcomesList.innerHTML = chips;
 }
 
-function renderFeed(attempts) {
+function renderFeed(events) {
   feedBody.innerHTML = '';
-  attempts.forEach((item) => {
+  events.forEach((item) => {
     const tr = document.createElement('tr');
+    const eventType = item.event_type || 'BIO';
     const safeLabel = item.label || 'UNLABELED';
-    const outcome = item.outcome || '--';
-    const outcomeClass = badgeClassForOutcome(outcome);
-    const rowClass = rowClassForOutcome(outcome);
+    const result = item.result || '--';
+    const resultClass = badgeClassForResult(result, eventType);
+    const rowClass = rowClassForResult(result, eventType);
+    const canLabel = String(eventType).toUpperCase() === 'BIO';
+    const userLabel = item.username || item.user_id || '--';
+
     tr.className = `feed-row ${rowClass}`.trim();
     tr.innerHTML = `
-      <td>${formatTime(item.created_at)}</td>
-      <td>${item.user_id || '--'}</td>
-      <td><span class="badge ${outcomeClass}">${outcome}</span></td>
+      <td>${formatTime(item.event_time)}</td>
+      <td>${userLabel}</td>
+      <td><span class="badge ${resultClass}">${result}</span></td>
       <td>${formatValue(item.score)}</td>
       <td>${formatValue(item.coverage_ratio)}</td>
       <td>${formatValue(item.matched_pairs)}</td>
       <td>${item.ip_address || '--'}</td>
       <td>${item.request_id || '--'}</td>
-      <td><span class="badge label">${safeLabel}</span></td>
+      <td>${canLabel ? `<span class="badge label">${safeLabel}</span>` : '--'}</td>
       <td>
-        <button class="btn mini-btn" data-action="mark-genuine" data-id="${item.id}">Genuine</button>
-        <button class="btn btn-danger mini-btn" data-action="mark-imposter" data-id="${item.id}">Imposter</button>
+        ${canLabel ? `
+          <button class="btn mini-btn" data-action="mark-genuine" data-id="${item.event_id}">Genuine</button>
+          <button class="btn btn-danger mini-btn" data-action="mark-imposter" data-id="${item.event_id}">Imposter</button>
+        ` : ''}
       </td>
     `;
     feedBody.appendChild(tr);
@@ -162,28 +183,6 @@ function renderFeed(attempts) {
   document.querySelectorAll('button[data-action="mark-genuine"], button[data-action="mark-imposter"]').forEach((btn) => {
     btn.disabled = !(modeToggle.checked && state.canControl);
     btn.addEventListener('click', () => runLabelAction(btn.getAttribute('data-id'), btn.getAttribute('data-action')));
-  });
-}
-
-function renderAuthFeed(events) {
-  if (!authFeedBody) return;
-
-  authFeedBody.innerHTML = '';
-  events.forEach((item) => {
-    const tr = document.createElement('tr');
-    const verdict = item.verdict || '--';
-    const verdictClass = badgeClassForVerdict(verdict);
-
-    tr.innerHTML = `
-      <td>${formatTime(item.attempted_at)}</td>
-      <td>${item.user_id || '--'}</td>
-      <td><span class="badge ${verdictClass}">${verdict}</span></td>
-      <td>${formatValue(item.score)}</td>
-      <td>${item.ip_address || '--'}</td>
-      <td>${item.request_id || '--'}</td>
-    `;
-
-    authFeedBody.appendChild(tr);
   });
 }
 
@@ -230,23 +229,13 @@ async function loadOverview() {
 }
 
 async function loadFeed() {
-  const response = await apiGet('/admin/api/feed?limit=40');
+  const response = await apiGet('/admin/api/live-feed?limit=40');
   if (!response.ok) {
     controlBox.textContent = summarizeErrorPayload(response.data, 'Unable to load feed right now.');
     setLiveMeta(`Feed refresh failed at ${new Date().toLocaleTimeString()}`);
     return;
   }
-  renderFeed(response.data.attempts || []);
-}
-
-async function loadAuthFeed() {
-  const response = await apiGet('/admin/api/auth-feed?limit=40');
-  if (!response.ok) {
-    setLiveMeta(`Auth feed refresh failed at ${new Date().toLocaleTimeString()}`);
-    return;
-  }
-
-  renderAuthFeed(response.data.events || []);
+  renderFeed(response.data.events || []);
 }
 
 async function refreshDashboardCycle() {
@@ -257,7 +246,6 @@ async function refreshDashboardCycle() {
   try {
     await loadOverview();
     await loadFeed();
-    await loadAuthFeed();
   } finally {
     refreshInFlight = false;
     nextRefreshAt = Date.now() + REFRESH_INTERVAL_MS;

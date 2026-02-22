@@ -89,12 +89,140 @@ DB_USER = ENV['DB_USER'] || db_config['user'] || 'postgres'
 DB_PASS = ENV['DB_PASSWORD'] || db_config['password'] || 'change_me'
 DB_HOST = ENV['DB_HOST'] || db_config['host'] || 'localhost'
 
+class ResilientDb
+  def initialize(dbname:, user:, password:, host:, logger:)
+    @dbname = dbname
+    @user = user
+    @password = password
+    @host = host
+    @logger = logger
+    @mutex = Mutex.new
+    @conn = nil
+
+    connect!
+  end
+
+  def exec(sql)
+    with_retry { |conn| conn.exec(sql) }
+  end
+
+  def exec_params(sql, params)
+    with_retry { |conn| conn.exec_params(sql, params) }
+  end
+
+  def transaction
+    result = nil
+    with_retry do |conn|
+      if conn.respond_to?(:transaction)
+        conn.transaction do |tx_conn|
+          result = yield tx_conn
+        end
+      else
+        conn.exec('BEGIN')
+        begin
+          result = yield conn
+          conn.exec('COMMIT')
+        rescue
+          begin
+            conn.exec('ROLLBACK')
+          rescue
+            nil
+          end
+          raise
+        end
+      end
+    end
+    result
+  end
+
+  def close
+    @mutex.synchronize do
+      begin
+        @conn&.close
+      rescue
+        nil
+      ensure
+        @conn = nil
+      end
+    end
+  end
+
+  private
+
+  def connect_locked!
+    begin
+      @conn&.close
+    rescue
+      nil
+    end
+
+    @conn = PG.connect(
+      dbname: @dbname,
+      user: @user,
+      password: @password,
+      host: @host
+    )
+  end
+
+  def connect!
+    @mutex.synchronize { connect_locked! }
+  end
+
+  def connection_alive?
+    conn = @conn
+    return false if conn.nil?
+
+    begin
+      return false if conn.respond_to?(:finished?) && conn.finished?
+      return false if conn.respond_to?(:status) && conn.status != PG::CONNECTION_OK
+    rescue
+      return false
+    end
+
+    true
+  end
+
+  def with_connection_locked
+    connect_locked! unless connection_alive?
+    @conn
+  end
+
+  def recoverable_pg_error?(error)
+    msg = error.message.to_s
+    return true if msg.include?('no connection to the server')
+    return true if msg.include?('connection is closed')
+    return true if msg.include?('server closed the connection unexpectedly')
+    return true if msg.include?('terminating connection due to administrator command')
+    false
+  end
+
+  def with_retry(max_attempts: 2)
+    attempt = 0
+
+    begin
+      attempt += 1
+      @mutex.synchronize do
+        conn = with_connection_locked
+        return yield conn
+      end
+    rescue PG::Error => e
+      raise if attempt >= max_attempts
+      raise unless recoverable_pg_error?(e)
+
+      @logger.warn "DB connection lost; reconnecting and retrying (attempt #{attempt + 1}/#{max_attempts}): #{e.message}"
+      connect!
+      retry
+    end
+  end
+end
+
 begin
-  DB = PG.connect(
-    dbname:   DB_NAME, 
-    user:     DB_USER, 
+  DB = ResilientDb.new(
+    dbname: DB_NAME,
+    user: DB_USER,
     password: DB_PASS,
-    host:     DB_HOST
+    host: DB_HOST,
+    logger: $logger
   )
   $logger.info "Connected to database #{DB_NAME} at #{DB_HOST}"
 rescue PG::Error => e
@@ -612,6 +740,19 @@ def active_session_for(token)
   result[0]
 end
 
+def user_id_for_username(username)
+  return nil if username.nil? || username.strip.empty?
+
+  result = DB.exec_params('SELECT id FROM users WHERE username = $1 LIMIT 1', [username.strip])
+  return nil if result.ntuples == 0
+
+  result[0]['id']&.to_i
+rescue PG::Error
+  nil
+rescue
+  nil
+end
+
 post '/auth/register' do
   content_type :json
   begin
@@ -664,8 +805,23 @@ post '/auth/login' do
   content_type :json
   begin
     ip_address = client_ip
+    raw_body = nil
+    begin
+      raw_body = request.body.read
+      request.body.rewind
+    rescue
+      raw_body = nil
+    end
+
     if rate_limited?('auth-login-ip', ip_address, limit: AUTH_RATE_LIMIT_MAX, window_seconds: AUTH_RATE_LIMIT_WINDOW_SECONDS)
-      log_access_event(user_id: nil, verdict: 'AUTH_RATE', score: nil)
+      attempted_username = nil
+      begin
+        attempted_username = JSON.parse(raw_body.to_s)['username']&.strip
+      rescue
+        attempted_username = nil
+      end
+
+      log_access_event(user_id: user_id_for_username(attempted_username), verdict: 'AUTH_RATE', score: nil)
       return json_error('Too many requests. Try again shortly.', 429)
     end
 
@@ -680,7 +836,7 @@ post '/auth/login' do
     end
 
     if login_locked_out?(username, ip_address)
-      log_access_event(user_id: nil, verdict: 'AUTH_LOCK', score: nil)
+      log_access_event(user_id: user_id_for_username(username), verdict: 'AUTH_LOCK', score: nil)
       return json_error('Account temporarily locked due to repeated failures', 423)
     end
 
@@ -690,8 +846,9 @@ post '/auth/login' do
     )
 
     if result.ntuples == 0 || !password_matches?(password, result[0]['password_hash'])
+      failing_user_id = result.ntuples > 0 ? result[0]['id'].to_i : nil
       record_login_attempt(username, ip_address, false)
-      log_access_event(user_id: nil, verdict: 'AUTH_FAIL', score: nil)
+      log_access_event(user_id: failing_user_id, verdict: 'AUTH_FAIL', score: nil)
       return json_error('Invalid credentials', 401)
     end
 
@@ -869,10 +1026,17 @@ def rate_limited?(scope, key, limit:, window_seconds:)
 end
 
 def log_access_event(user_id:, verdict:, score: nil)
-  DB.exec_params(
-    'INSERT INTO access_logs (user_id, distance_score, verdict) VALUES ($1, $2, $3)',
-    [user_id, score, verdict.to_s[0, 10]]
-  )
+  begin
+    DB.exec_params(
+      'INSERT INTO access_logs (user_id, distance_score, verdict, ip_address, request_id) VALUES ($1, $2, $3, $4, $5)',
+      [user_id, score, verdict.to_s[0, 10], client_ip, current_request_id]
+    )
+  rescue PG::UndefinedColumn
+    DB.exec_params(
+      'INSERT INTO access_logs (user_id, distance_score, verdict) VALUES ($1, $2, $3)',
+      [user_id, score, verdict.to_s[0, 10]]
+    )
+  end
 rescue PG::Error => e
   $logger.warn "Failed to log access event #{verdict}: #{e.message}"
 end
@@ -964,6 +1128,19 @@ get '/admin/api/feed' do
 
   with_dashboard_service do |service|
     json_success({ attempts: service.latest_attempts(limit: limit) })
+  end
+end
+
+get '/admin/api/live-feed' do
+  content_type :json
+  require_dashboard_read!
+
+  limit = params['limit']&.to_i || 50
+  limit = 200 if limit > 200
+  limit = 1 if limit < 1
+
+  with_dashboard_service do |service|
+    json_success({ events: service.latest_live_events(limit: limit) })
   end
 end
 
