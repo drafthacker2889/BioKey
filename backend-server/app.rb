@@ -46,6 +46,29 @@ def json_error(message, status_code = 500)
   { status: "ERROR", message: message }.to_json
 end
 
+def valid_username?(username)
+  !username.nil? && username.match?(/\A[a-zA-Z0-9_]{3,32}\z/)
+end
+
+def valid_password?(password)
+  !password.nil? && password.length >= 8 && password.length <= 128
+end
+
+def valid_timing_payload?(timings)
+  return false unless timings.is_a?(Array)
+  return false if timings.empty? || timings.length > 500
+
+  timings.each_with_index do |sample, index|
+    normalized = normalize_timing_sample(sample, index)
+    return false if normalized.nil?
+    return false if normalized[:pair].strip.empty? || normalized[:pair].length > 16
+    return false if normalized[:dwell] <= 0 || normalized[:flight] <= 0
+    return false if normalized[:dwell] > 5000 || normalized[:flight] > 5000
+  end
+
+  true
+end
+
 def ensure_user_exists(user_id)
   existing = DB.exec_params("SELECT id FROM users WHERE id = $1 LIMIT 1", [user_id])
   return if existing.ntuples > 0
@@ -90,7 +113,7 @@ post '/train' do
     user_id = data['user_id']&.to_i
     timings = data['timings']
 
-    if user_id.nil? || user_id <= 0 || timings.nil? || !timings.is_a?(Array) || timings.empty?
+    if user_id.nil? || user_id <= 0 || !valid_timing_payload?(timings)
        return json_error("Invalid input data", 400)
     end
 
@@ -136,10 +159,10 @@ post '/login' do
   content_type :json
   begin
     data = JSON.parse(request.body.read)
-    user_id = data['user_id']
+    user_id = data['user_id']&.to_i
     timings = data['timings']
     
-    if user_id.nil? || timings.nil?
+    if user_id.nil? || user_id <= 0 || !valid_timing_payload?(timings)
       return json_error("Missing user_id or timings", 400)
     end
 
@@ -216,8 +239,12 @@ post '/auth/register' do
     username = data['username']&.strip
     password = data['password']
 
-    if username.nil? || username.empty? || password.nil? || password.length < 6
-      return json_error('Username required and password must be at least 6 chars', 400)
+    if !valid_username?(username)
+      return json_error('Username must be 3-32 chars (letters, numbers, underscore)', 400)
+    end
+
+    if !valid_password?(password)
+      return json_error('Password must be between 8 and 128 chars', 400)
     end
 
     DB.exec_params(
@@ -246,7 +273,7 @@ post '/auth/login' do
     username = data['username']&.strip
     password = data['password']
 
-    if username.nil? || username.empty? || password.nil? || password.empty?
+    if !valid_username?(username) || password.nil? || password.empty?
       return json_error('Missing username or password', 400)
     end
 
@@ -328,6 +355,41 @@ post '/auth/logout' do
     json_error('Database error')
   rescue => e
     $logger.error "Unknown error in /auth/logout: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
+post '/auth/refresh' do
+  content_type :json
+  begin
+    token = bearer_token
+    return json_error('Missing authorization token', 401) if token.nil?
+
+    session = active_session_for(token)
+    return json_error('Unauthorized', 401) if session.nil?
+
+    new_token = generate_session_token
+    new_expires_at = (Time.now + 24 * 60 * 60).utc
+
+    updated = DB.exec_params(
+      'UPDATE user_sessions SET session_token = $1, expires_at = $2 WHERE session_token = $3',
+      [new_token, new_expires_at, token]
+    )
+
+    return json_error('Unauthorized', 401) if updated.cmd_tuples == 0
+
+    {
+      status: 'SUCCESS',
+      token: new_token,
+      user_id: session['user_id'].to_i,
+      username: session['username'],
+      expires_at: new_expires_at
+    }.to_json
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/refresh: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/refresh: #{e.message}"
     json_error('Internal Server Error')
   end
 end

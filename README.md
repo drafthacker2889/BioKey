@@ -212,6 +212,9 @@ Returns session token + user details.
 ## `GET /auth/profile`
 Returns authenticated profile summary (`Authorization: Bearer <token>`).
 
+## `POST /auth/refresh`
+Rotates session token and extends expiry (`Authorization: Bearer <token>`).
+
 ## `POST /auth/logout`
 Invalidates the current session token.
 
@@ -267,6 +270,7 @@ Hello World
 - `/train` foreign-key failure was fixed by ensuring `users` row exists for incoming `user_id`.
 - `/train` and `/login` now accept both object timings and numeric timing arrays (backend normalizes either format).
 - End-to-end API flow was validated on local backend: `register -> auth/login -> auth/profile -> train -> biometric login -> auth/logout`.
+- Token refresh flow is available and validated: `auth/login -> auth/refresh -> auth/profile`.
 - SQL seeds file (`database/seeds.sql`) is currently empty.
 - Android source is committed; generated artifacts (`.idea`, `.cxx`, build outputs) are ignored.
 
@@ -314,4 +318,5 @@ This is a prototype implementation for development/testing. Before production us
 - ✅ Phase 2: Account auth/session API + persistent session in app
 - ✅ Phase 3: MVVM refactor (`ui`, `viewmodel`, `model`, `data` split)
 - ✅ Phase 4: Networking hardening (`OkHttp`, centralized API error mapping, unauthorized session handling)
-- 🔜 Next recommended phase: Retrofit service interfaces + auth token refresh endpoint + richer domain validation
+- ✅ Phase 5: Retrofit API service layer + `/auth/refresh` endpoint + stricter auth/timing validation
+- 🔜 Next recommended phase: secure password hashing migration (`bcrypt/argon2`) + refresh-token revocation policy + instrumentation tests

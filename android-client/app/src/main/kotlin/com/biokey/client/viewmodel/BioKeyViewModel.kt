@@ -199,12 +199,19 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            val result = BioKeyApiClient.getAuthProfile(state.serverUrl, state.authToken)
+            var activeToken = state.authToken
+            var result = BioKeyApiClient.getAuthProfile(state.serverUrl, activeToken)
 
             if (result.statusCode == 401) {
-                clearSessionState()
-                _events.emit("Session expired. Please login again.")
-                return@launch
+                val refreshedToken = tryRefreshToken(state.serverUrl, activeToken)
+                if (refreshedToken.isNullOrBlank()) {
+                    clearSessionState()
+                    _events.emit("Session expired. Please login again.")
+                    return@launch
+                }
+
+                activeToken = refreshedToken
+                result = BioKeyApiClient.getAuthProfile(state.serverUrl, activeToken)
             }
 
             val profileText = if (result.statusCode in 200..299) {
@@ -214,6 +221,32 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
             }
             _uiState.update { it.copy(profileText = profileText, isLoading = false) }
         }
+    }
+
+    private suspend fun tryRefreshToken(serverUrl: String, currentToken: String): String? {
+        val refreshResult = BioKeyApiClient.postAuthRefresh(serverUrl, currentToken)
+        if (refreshResult.statusCode !in 200..299) {
+            return null
+        }
+
+        val refreshedSession = parseAuthSession(refreshResult.body) ?: return null
+
+        prefs.edit()
+            .putString("auth_token", refreshedSession.token)
+            .putString("auth_username", refreshedSession.username)
+            .putInt("auth_user_id", refreshedSession.userId)
+            .apply()
+
+        _uiState.update {
+            it.copy(
+                authToken = refreshedSession.token,
+                username = refreshedSession.username,
+                userId = refreshedSession.userId.toString(),
+                homeText = "Welcome, ${refreshedSession.username}"
+            )
+        }
+
+        return refreshedSession.token
     }
 
     fun doLogout() {
