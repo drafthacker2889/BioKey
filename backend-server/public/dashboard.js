@@ -29,6 +29,24 @@ async function apiPost(path, payload) {
   try { return { ok: res.ok, data: JSON.parse(text) }; } catch (_) { return { ok: res.ok, data: { raw: text } }; }
 }
 
+function summarizeErrorPayload(payload, fallbackMessage) {
+  if (!payload || typeof payload !== 'object') return fallbackMessage;
+
+  if (payload.error && payload.error.message) {
+    return payload.error.message;
+  }
+
+  if (typeof payload.raw === 'string') {
+    const raw = payload.raw.trim();
+    if (raw.toLowerCase().startsWith('<!doctype html') || raw.toLowerCase().startsWith('<html')) {
+      return 'Dashboard API returned an HTML error page. Backend likely hit a transient DB issue; refreshing should recover.';
+    }
+    return raw.slice(0, 220);
+  }
+
+  return fallbackMessage;
+}
+
 function updateControlState() {
   const enabled = modeToggle.checked && state.canControl;
   document.querySelectorAll('[data-action]').forEach((btn) => { btn.disabled = !enabled; });
@@ -147,7 +165,13 @@ async function runLabelAction(attemptId, action) {
 async function loadOverview() {
   const response = await apiGet('/admin/api/overview');
   if (!response.ok) {
-    overviewBox.textContent = JSON.stringify(response.data, null, 2);
+    const message = summarizeErrorPayload(response.data, 'Unable to load overview.');
+    overviewBox.textContent = message;
+    statusLine.textContent = message;
+    systemPill.textContent = 'System: Degraded';
+    systemPill.className = 'pill bad';
+    if (overviewGrid) overviewGrid.innerHTML = '';
+    if (outcomesList) outcomesList.innerHTML = '<span class="chip bad">Data unavailable</span>';
     return;
   }
 
@@ -170,7 +194,7 @@ async function loadOverview() {
 async function loadFeed() {
   const response = await apiGet('/admin/api/feed?limit=40');
   if (!response.ok) {
-    controlBox.textContent = JSON.stringify(response.data, null, 2);
+    controlBox.textContent = summarizeErrorPayload(response.data, 'Unable to load feed right now.');
     return;
   }
   renderFeed(response.data.attempts || []);
@@ -183,6 +207,10 @@ async function loadUser() {
     return;
   }
   const response = await apiGet(`/admin/api/user/${userId}`);
+  if (!response.ok) {
+    userBox.textContent = summarizeErrorPayload(response.data, 'Unable to load user details.');
+    return;
+  }
   userBox.textContent = JSON.stringify(response.data, null, 2);
 }
 

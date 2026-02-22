@@ -102,6 +102,34 @@ rescue PG::Error => e
   exit(1)
 end
 
+def open_fresh_db_connection
+  PG.connect(
+    dbname:   DB_NAME,
+    user:     DB_USER,
+    password: DB_PASS,
+    host:     DB_HOST
+  )
+end
+
+def with_dashboard_service
+  primary_service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
+  return yield primary_service
+rescue PG::Error => e
+  $logger.warn "Dashboard query failed on primary DB connection, retrying with fresh connection: #{e.message}"
+
+  fresh_db = nil
+  begin
+    fresh_db = open_fresh_db_connection
+    fallback_service = DashboardService.new(db: fresh_db, uptime_seconds: Time.now - APP_BOOT_TIME)
+    yield fallback_service
+  rescue PG::Error => inner
+    $logger.error "Dashboard query failed after retry: #{inner.message}"
+    json_error('Dashboard data temporarily unavailable. Please refresh in a few seconds.', 503, 'DB_UNAVAILABLE')
+  ensure
+    fresh_db&.close
+  end
+end
+
 def current_request_id
   request.env['BIOKEY_REQUEST_ID']
 rescue
@@ -921,8 +949,9 @@ get '/admin/api/overview' do
   content_type :json
   require_dashboard_read!
 
-  service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
-  json_success(service.overview(can_control: can_control_dashboard?, is_admin: admin_authenticated?))
+  with_dashboard_service do |service|
+    json_success(service.overview(can_control: can_control_dashboard?, is_admin: admin_authenticated?))
+  end
 end
 
 get '/admin/api/feed' do
@@ -933,8 +962,9 @@ get '/admin/api/feed' do
   limit = 200 if limit > 200
   limit = 1 if limit < 1
 
-  service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
-  json_success({ attempts: service.latest_attempts(limit: limit) })
+  with_dashboard_service do |service|
+    json_success({ attempts: service.latest_attempts(limit: limit) })
+  end
 end
 
 post '/admin/api/attempt/:id/label' do
@@ -1037,8 +1067,9 @@ get '/admin/api/user/:user_id' do
   user_id = params['user_id'].to_i
   return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
 
-  service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
-  json_success(service.user_detail(user_id))
+  with_dashboard_service do |service|
+    json_success(service.user_detail(user_id))
+  end
 end
 
 post '/admin/api/recalibrate/:user_id' do
