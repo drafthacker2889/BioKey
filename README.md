@@ -143,8 +143,21 @@ cd android-client
 (Windows: `gradlew.bat`)
 
 ### Compose/Kotlin Compatibility
-Project currently uses Kotlin + Compose plugin configuration from the Gradle files in `android-client/`.
-If Android Studio requests upgrades/downgrades, keep Kotlin/Compose/AGP versions aligned.
+Project is pinned to a stable, tested Android toolchain:
+- AGP: `8.5.2`
+- Gradle: `8.7`
+- Kotlin: `1.9.24`
+- Compose compiler extension: `1.5.14`
+- NDK: `27.0.12077973` (set in app module via `ndkVersion`)
+
+If sync/build fails after dependency or IDE updates, re-align these versions first.
+
+### Build Troubleshooting
+- If you see Kotlin daemon connection warnings, Gradle may fall back to non-daemon compilation; this is usually non-fatal.
+- If NDK resolution errors appear, ensure Android SDK NDK `27.0.12077973` is installed and reload Gradle.
+- Run:
+  - `./gradlew --stop`
+  - `./gradlew :app:assembleDebug`
 
 ---
 
