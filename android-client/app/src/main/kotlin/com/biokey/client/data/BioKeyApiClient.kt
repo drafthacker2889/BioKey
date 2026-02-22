@@ -4,61 +4,56 @@ import com.biokey.client.model.ApiResult
 import com.biokey.client.model.Timing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.logging.HttpLoggingInterceptor
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.TimeUnit
 
 object BioKeyApiClient {
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    private val okHttpClient: OkHttpClient by lazy {
+        val logger = HttpLoggingInterceptor().apply {
+            level = HttpLoggingInterceptor.Level.BASIC
+        }
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .addInterceptor(logger)
+            .build()
+    }
+
     suspend fun postTimings(
         baseUrl: String,
         endpoint: String,
         userId: Int,
         timings: List<Timing>
     ): ApiResult = withContext(Dispatchers.IO) {
-        val trimmed = baseUrl.trimEnd('/')
-        val url = URL("$trimmed$endpoint")
-        val connection = (url.openConnection() as HttpURLConnection)
-        try {
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Accept", "application/json")
-
-            val jsonTimings = JSONArray()
-            for (timing in timings) {
-                jsonTimings.put(
-                    JSONObject()
-                        .put("pair", timing.pair)
-                        .put("dwell", timing.dwell)
-                        .put("flight", timing.flight)
-                )
-            }
-
-            val payload = JSONObject()
-                .put("user_id", userId)
-                .put("timings", jsonTimings)
-
-            connection.outputStream.bufferedWriter().use { writer ->
-                writer.write(payload.toString())
-            }
-
-            val statusCode = connection.responseCode
-            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
-            val responseBody = responseStream?.let {
-                BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() }
-            } ?: ""
-
-            ApiResult(statusCode = statusCode, body = responseBody)
-        } catch (exception: Exception) {
-            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
-        } finally {
-            connection.disconnect()
+        val payload = JSONObject().put("user_id", userId)
+        val jsonTimings = JSONArray()
+        for (timing in timings) {
+            jsonTimings.put(
+                JSONObject()
+                    .put("pair", timing.pair)
+                    .put("dwell", timing.dwell)
+                    .put("flight", timing.flight)
+            )
         }
+        payload.put("timings", jsonTimings)
+
+        execute(
+            request = Request.Builder()
+                .url("${baseUrl.trimEnd('/')}$endpoint")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .addHeader("Accept", "application/json")
+                .build()
+        )
     }
 
     suspend fun postAuthCredential(
@@ -67,86 +62,49 @@ object BioKeyApiClient {
         username: String,
         password: String
     ): ApiResult = withContext(Dispatchers.IO) {
-        val trimmed = baseUrl.trimEnd('/')
-        val url = URL("$trimmed$endpoint")
-        val connection = (url.openConnection() as HttpURLConnection)
-        try {
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Accept", "application/json")
+        val payload = JSONObject()
+            .put("username", username)
+            .put("password", password)
 
-            val payload = JSONObject()
-                .put("username", username)
-                .put("password", password)
-
-            connection.outputStream.bufferedWriter().use { writer ->
-                writer.write(payload.toString())
-            }
-
-            val statusCode = connection.responseCode
-            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
-            val responseBody = responseStream?.let {
-                BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() }
-            } ?: ""
-
-            ApiResult(statusCode = statusCode, body = responseBody)
-        } catch (exception: Exception) {
-            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
-        } finally {
-            connection.disconnect()
-        }
+        execute(
+            request = Request.Builder()
+                .url("${baseUrl.trimEnd('/')}$endpoint")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .addHeader("Accept", "application/json")
+                .build()
+        )
     }
 
     suspend fun getAuthProfile(baseUrl: String, token: String): ApiResult = withContext(Dispatchers.IO) {
-        val trimmed = baseUrl.trimEnd('/')
-        val url = URL("$trimmed/auth/profile")
-        val connection = (url.openConnection() as HttpURLConnection)
-        try {
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Authorization", "Bearer $token")
-
-            val statusCode = connection.responseCode
-            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
-            val responseBody = responseStream?.let {
-                BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() }
-            } ?: ""
-
-            ApiResult(statusCode = statusCode, body = responseBody)
-        } catch (exception: Exception) {
-            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
-        } finally {
-            connection.disconnect()
-        }
+        execute(
+            request = Request.Builder()
+                .url("${baseUrl.trimEnd('/')}/auth/profile")
+                .get()
+                .addHeader("Accept", "application/json")
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+        )
     }
 
     suspend fun postAuthLogout(baseUrl: String, token: String): ApiResult = withContext(Dispatchers.IO) {
-        val trimmed = baseUrl.trimEnd('/')
-        val url = URL("$trimmed/auth/logout")
-        val connection = (url.openConnection() as HttpURLConnection)
+        execute(
+            request = Request.Builder()
+                .url("${baseUrl.trimEnd('/')}/auth/logout")
+                .post("".toRequestBody(null))
+                .addHeader("Accept", "application/json")
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+        )
+    }
+
+    private fun execute(request: Request): ApiResult {
         try {
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Authorization", "Bearer $token")
-
-            val statusCode = connection.responseCode
-            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
-            val responseBody = responseStream?.let {
-                BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() }
-            } ?: ""
-
-            ApiResult(statusCode = statusCode, body = responseBody)
+            okHttpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                return ApiResult(statusCode = response.code, body = body)
+            }
         } catch (exception: Exception) {
             ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
-        } finally {
-            connection.disconnect()
         }
     }
 }

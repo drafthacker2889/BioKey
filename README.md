@@ -287,4 +287,5 @@ This is a prototype implementation for development/testing. Before production us
 - ✅ Phase 1: Real typing-event capture (replaced synthetic timings)
 - ✅ Phase 2: Account auth/session API + persistent session in app
 - ✅ Phase 3: MVVM refactor (`ui`, `viewmodel`, `model`, `data` split)
-- 🔜 Next recommended phase: Retrofit/OkHttp + token refresh/error mapping + production hardening
+- ✅ Phase 4: Networking hardening (`OkHttp`, centralized API error mapping, unauthorized session handling)
+- 🔜 Next recommended phase: Retrofit service interfaces + auth token refresh endpoint + richer domain validation

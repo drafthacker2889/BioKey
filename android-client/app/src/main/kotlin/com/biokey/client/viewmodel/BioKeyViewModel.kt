@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.biokey.client.data.ApiErrorMapper
 import com.biokey.client.data.BioKeyApiClient
 import com.biokey.client.model.AppScreen
 import com.biokey.client.model.BioKeyUiState
@@ -84,7 +85,7 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isLoading = true) }
             val result = BioKeyApiClient.postTimings(state.serverUrl, "/train", parsedUserId, state.capturedTimings)
             _uiState.update { it.copy(resultText = "HTTP ${result.statusCode}: ${result.body}", isLoading = false) }
-            _events.emit("Train result: ${result.statusCode}")
+            _events.emit(ApiErrorMapper.toUserMessage("Train", result))
         }
     }
 
@@ -101,7 +102,7 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
             val loginResult = BioKeyApiClient.postTimings(state.serverUrl, "/login", parsedUserId, state.capturedTimings)
             val loginStatus = parseBackendStatus(loginResult.body)
             _uiState.update { it.copy(resultText = "HTTP ${loginResult.statusCode}: ${loginResult.body}") }
-            _events.emit("Biometric login: ${loginStatus ?: "UNKNOWN"}")
+            _events.emit(ApiErrorMapper.toUserMessage("Biometric login", loginResult))
 
             if (loginStatus == "SUCCESS") {
                 val trainResult = BioKeyApiClient.postTimings(state.serverUrl, "/train", parsedUserId, state.capturedTimings)
@@ -135,7 +136,7 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
                 state.password
             )
             _uiState.update { it.copy(resultText = "HTTP ${result.statusCode}: ${result.body}", isLoading = false) }
-            _events.emit("Register result: ${result.statusCode}")
+            _events.emit(ApiErrorMapper.toUserMessage("Register", result))
         }
     }
 
@@ -175,14 +176,14 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
                         .putInt("auth_user_id", session.userId)
                         .apply()
 
-                    _events.emit("Account login successful")
+                    _events.emit(ApiErrorMapper.toUserMessage("Account login", result))
                     refreshProfile()
                 } else {
                     _uiState.update { it.copy(resultText = "Auth response parse failed") }
                 }
             } else {
                 _uiState.update { it.copy(resultText = "HTTP ${result.statusCode}: ${result.body}") }
-                _events.emit("Account login failed")
+                _events.emit(ApiErrorMapper.toUserMessage("Account login", result))
             }
 
             _uiState.update { it.copy(isLoading = false) }
@@ -199,6 +200,13 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             val result = BioKeyApiClient.getAuthProfile(state.serverUrl, state.authToken)
+
+            if (result.statusCode == 401) {
+                clearSessionState()
+                _events.emit("Session expired. Please login again.")
+                return@launch
+            }
+
             val profileText = if (result.statusCode in 200..299) {
                 parseProfileSummary(result.body)
             } else {
@@ -215,23 +223,28 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
                 BioKeyApiClient.postAuthLogout(state.serverUrl, state.authToken)
             }
 
-            prefs.edit()
-                .remove("auth_token")
-                .remove("auth_username")
-                .remove("auth_user_id")
-                .apply()
-
-            _uiState.update {
-                it.copy(
-                    authToken = "",
-                    password = "",
-                    profileText = "Profile not loaded",
-                    currentScreen = AppScreen.LOGIN,
-                    homeText = "Welcome",
-                    resultText = "Logged out"
-                )
-            }
+            clearSessionState(resultText = "Logged out")
             _events.emit("Logged out")
+        }
+    }
+
+    private fun clearSessionState(resultText: String = "Session cleared") {
+        prefs.edit()
+            .remove("auth_token")
+            .remove("auth_username")
+            .remove("auth_user_id")
+            .apply()
+
+        _uiState.update {
+            it.copy(
+                authToken = "",
+                password = "",
+                profileText = "Profile not loaded",
+                currentScreen = AppScreen.LOGIN,
+                homeText = "Welcome",
+                resultText = resultText,
+                isLoading = false
+            )
         }
     }
 }
