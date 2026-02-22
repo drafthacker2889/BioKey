@@ -21,6 +21,11 @@ Generate a bcrypt hash from Ruby:
 ruby -rbcrypt -e "puts BCrypt::Password.create('change_me')"
 ```
 
+### Demo admin credentials (local)
+
+- Username: `admin`
+- Password: `jerryin2323`
+
 ## Dashboard routes
 
 - `GET /admin`

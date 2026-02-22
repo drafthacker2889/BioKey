@@ -78,6 +78,22 @@ Admin env vars:
 - `ADMIN_TOKEN` (optional)
 - `APP_SESSION_SECRET` (must be strong; at least 64 chars)
 
+### Demo admin credentials (current local setup)
+
+- Username: `admin`
+- Password: `jerryin2323`
+
+PowerShell startup example:
+
+```powershell
+cd backend-server
+$hash = ruby -rbcrypt -e "puts BCrypt::Password.create('jerryin2323')"
+$env:ADMIN_USER='admin'
+$env:ADMIN_PASSWORD_HASH=$hash.Trim()
+$env:APP_SESSION_SECRET='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+ruby app.rb
+```
+
 Generate bcrypt hash:
 
 ```bash
