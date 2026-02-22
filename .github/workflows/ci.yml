@@ -25,8 +25,8 @@ jobs:
 
       - name: Run backend tests
         run: |
-          ruby -Itest test/auth_service_test.rb
-          ruby -Itest test/evaluation_service_test.rb
+          bundle exec ruby -Itest test/auth_service_test.rb
+          bundle exec ruby -Itest test/evaluation_service_test.rb
 
   android-unit-tests:
     runs-on: ubuntu-latest
@@ -48,3 +48,6 @@ jobs:
 
       - name: Run Android unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Assemble Android debug build
+        run: ./gradlew :app:assembleDebug --no-daemon

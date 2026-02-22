@@ -39,11 +39,9 @@ class AuthServiceTest < Minitest::Test
       }
     ])
 
-    AuthService.stub(:record_score, nil) do
-      result = AuthService.verify_login(1, [{ 'pair' => 'ab', 'dwell' => 100, 'flight' => 50 }])
-      assert_equal('ERROR', result[:status])
-      assert_match(/Insufficient matched pairs/, result[:message])
-    end
+    result = AuthService.verify_login(1, [{ 'pair' => 'ab', 'dwell' => 100, 'flight' => 50 }])
+    assert_equal('ERROR', result[:status])
+    assert_match(/Insufficient matched pairs/, result[:message])
   end
 
   def test_verify_login_success_flow_returns_thresholds
@@ -119,18 +117,10 @@ class AuthServiceTest < Minitest::Test
       { 'pair' => 'fg', 'dwell' => 105, 'flight' => 55 }
     ]
 
-    AuthService.stub(:weighted_variance_aware_score, 1.1) do
-      AuthService.stub(:calibrated_thresholds_for_user, { success: 1.5, challenge: 2.2 }) do
-        AuthService.stub(:record_score, nil) do
-          AuthService.stub(:update_profile, nil) do
-            result = AuthService.verify_login(1, attempt)
-            assert_equal('SUCCESS', result[:status])
-            assert_equal(6, result[:matched_pairs])
-            assert_in_delta(1.0, result[:coverage_ratio], 0.001)
-            assert_in_delta(1.5, result[:success_threshold], 0.0001)
-          end
-        end
-      end
-    end
+    result = AuthService.verify_login(1, attempt)
+    assert_equal('SUCCESS', result[:status])
+    assert_equal(6, result[:matched_pairs])
+    assert_in_delta(1.0, result[:coverage_ratio], 0.001)
+    assert_in_delta(AuthService::DEFAULT_SUCCESS_THRESHOLD, result[:success_threshold], 0.0001)
   end
 end

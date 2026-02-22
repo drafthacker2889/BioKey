@@ -5,6 +5,7 @@ gem 'sinatra'
 
 # For creating JSON responses for the Android app
 gem 'json'
+gem 'csv'
 
 # The Foreign Function Interface to call our C Math Engine
 gem 'ffi'
@@ -12,6 +13,7 @@ gem 'ffi'
 # The PostgreSQL driver to talk to our SQL database
 gem 'pg'
 gem 'bcrypt'
+gem 'minitest', group: :test
 
 # Optional: For better development logging
 gem 'rack-test', group: :test
