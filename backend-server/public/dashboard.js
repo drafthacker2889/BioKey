@@ -34,9 +34,29 @@ function renderFeed(attempts) {
   feedBody.innerHTML = '';
   attempts.forEach((item) => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${item.created_at || ''}</td><td>${item.user_id || ''}</td><td>${item.outcome || ''}</td><td>${item.score ?? ''}</td><td>${item.coverage_ratio ?? ''}</td><td>${item.matched_pairs ?? ''}</td><td>${item.ip_address || ''}</td><td>${item.request_id || ''}</td>`;
+    const safeLabel = item.label || '';
+    tr.innerHTML = `<td>${item.created_at || ''}</td><td>${item.user_id || ''}</td><td>${item.outcome || ''}</td><td>${item.score ?? ''}</td><td>${item.coverage_ratio ?? ''}</td><td>${item.matched_pairs ?? ''}</td><td>${item.ip_address || ''}</td><td>${item.request_id || ''}</td><td>${safeLabel}</td><td><button data-action="mark-genuine" data-id="${item.id}">Genuine</button> <button data-action="mark-imposter" data-id="${item.id}">Imposter</button></td>`;
     feedBody.appendChild(tr);
   });
+
+  document.querySelectorAll('button[data-action="mark-genuine"], button[data-action="mark-imposter"]').forEach((btn) => {
+    btn.disabled = !(modeToggle.checked && state.canControl);
+    btn.addEventListener('click', () => runLabelAction(btn.getAttribute('data-id'), btn.getAttribute('data-action')));
+  });
+}
+
+async function runLabelAction(attemptId, action) {
+  if (!modeToggle.checked || !state.canControl) {
+    controlBox.textContent = 'Enable control mode and login as admin first.';
+    return;
+  }
+
+  const label = action === 'mark-genuine' ? 'GENUINE' : 'IMPOSTER';
+  if (!confirm(`Mark attempt ${attemptId} as ${label}?`)) return;
+
+  const response = await apiPost(`/admin/api/attempt/${attemptId}/label`, { label });
+  controlBox.textContent = JSON.stringify(response.data, null, 2);
+  await loadFeed();
 }
 
 async function loadOverview() {

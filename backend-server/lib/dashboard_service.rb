@@ -21,7 +21,7 @@ class DashboardService
 
   def latest_attempts(limit: 50)
     rows = @db.exec_params(
-      "SELECT id, user_id, outcome, score, coverage_ratio, matched_pairs, ip_address, request_id, created_at
+      "SELECT id, user_id, outcome, score, coverage_ratio, matched_pairs, ip_address, request_id, label, created_at
        FROM biometric_attempts
        ORDER BY created_at DESC
        LIMIT $1",
@@ -38,6 +38,7 @@ class DashboardService
         matched_pairs: row['matched_pairs']&.to_i,
         ip_address: row['ip_address'],
         request_id: row['request_id'],
+        label: row['label'],
         created_at: row['created_at']
       }
     end

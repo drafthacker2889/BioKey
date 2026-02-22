@@ -5,6 +5,7 @@
 - Read-only routes (`/admin`, `/admin/api/*` GET) are allowed from localhost by default.
 - Control routes (`/admin/api/*` POST) require admin auth (`/admin/login`) or `X-Admin-Token`.
 - Every control action is recorded in `audit_events`.
+- Forwarded headers are only trusted when `TRUST_PROXY=1`.
 
 ## Admin setup
 
@@ -31,3 +32,5 @@ ruby -rbcrypt -e "puts BCrypt::Password.create('change_me')"
 - `POST /admin/api/export-dataset`
 - `POST /admin/api/run-evaluation`
 - `POST /admin/api/cleanup-sessions`
+- `POST /admin/api/attempt/:id/label`
+- `POST /admin/api/attempts/label-bulk`

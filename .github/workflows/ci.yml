@@ -9,6 +9,27 @@ on:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: biokey_ci_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d biokey_ci_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_NAME: biokey_ci_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      ADMIN_TOKEN: ci-admin-token
+      APP_SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     defaults:
       run:
         working-directory: backend-server
@@ -25,8 +46,12 @@ jobs:
 
       - name: Run backend tests
         run: |
+          bundle exec ruby -c app.rb
+          bundle exec ruby -e "require 'pg'; connected=false; 30.times do; begin; PG.connect(dbname: ENV['DB_NAME'], user: ENV['DB_USER'], password: ENV['DB_PASSWORD'], host: ENV['DB_HOST']).close; connected=true; break; rescue; sleep 1; end; end; abort('postgres not ready') unless connected"
+          bundle exec ruby db/migrate.rb
           bundle exec ruby -Itest test/auth_service_test.rb
           bundle exec ruby -Itest test/evaluation_service_test.rb
+          bundle exec ruby -Itest test/integration_api_test.rb
 
   android-unit-tests:
     runs-on: ubuntu-latest

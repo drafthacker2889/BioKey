@@ -33,7 +33,7 @@ end
 set :bind, '0.0.0.0'
 set :port, 4567
 set :sessions, true
-set :session_secret, ENV['APP_SESSION_SECRET'] || 'biokey_dev_session_secret_change_me'
+set :session_secret, ENV['APP_SESSION_SECRET'] || 'biokey_dev_session_secret_change_me_0123456789abcdef0123456789ab'
 use ApiVersionMiddleware
 
 # Configure logging
@@ -118,8 +118,35 @@ def localhost_request?
   ip = request.ip.to_s
   return true if ['127.0.0.1', '::1', 'localhost'].include?(ip)
 
+  return false unless ENV['TRUST_PROXY'] == '1'
+
   forwarded = request.env['HTTP_X_FORWARDED_FOR'].to_s
   forwarded.split(',').map(&:strip).any? { |part| ['127.0.0.1', '::1', 'localhost'].include?(part) }
+end
+
+def ensure_required_tables!
+  required_tables = %w[
+    users
+    biometric_profiles
+    access_logs
+    user_sessions
+    auth_login_attempts
+    user_score_history
+    user_score_thresholds
+    audit_events
+    biometric_attempts
+    evaluation_reports
+  ]
+
+  missing = required_tables.select do |table_name|
+    DB.exec_params('SELECT to_regclass($1) AS table_ref', [table_name])[0]['table_ref'].nil?
+  end
+
+  return if missing.empty?
+
+  $logger.error "Missing required tables: #{missing.join(', ')}"
+  $logger.error "Run migrations first: cd backend-server && ruby db/migrate.rb"
+  exit(1)
 end
 
 def admin_username
@@ -171,6 +198,14 @@ def require_dashboard_control!
 
   content_type :json
   halt 403, json_error('Dashboard control access denied', 403, 'ADMIN_CONTROL_FORBIDDEN')
+end
+
+def normalize_attempt_label(value)
+  label = value.to_s.strip.upcase
+  return nil if label.empty? || label == 'UNLABELED'
+  return label if %w[GENUINE IMPOSTER].include?(label)
+
+  :invalid
 end
 
 def json_success(payload = {}, status_code = 200)
@@ -476,106 +511,9 @@ post '/login' do
 end
 
 begin
-  DB.exec("ALTER TABLE biometric_profiles ADD COLUMN IF NOT EXISTS std_dev_dwell FLOAT DEFAULT 0")
-  DB.exec("ALTER TABLE biometric_profiles ADD COLUMN IF NOT EXISTS m2_dwell FLOAT DEFAULT 0")
-  DB.exec("ALTER TABLE biometric_profiles ADD COLUMN IF NOT EXISTS m2_flight FLOAT DEFAULT 0")
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS user_sessions (
-      id SERIAL PRIMARY KEY,
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      session_token VARCHAR(128) UNIQUE NOT NULL,
-      expires_at TIMESTAMP NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW()
-    )"
-  )
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS auth_login_attempts (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(64) NOT NULL,
-      ip_address VARCHAR(64) NOT NULL,
-      successful BOOLEAN NOT NULL,
-      attempted_at TIMESTAMP DEFAULT NOW()
-    )"
-  )
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS user_score_history (
-      id SERIAL PRIMARY KEY,
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      score FLOAT NOT NULL,
-      outcome VARCHAR(16) NOT NULL,
-      coverage_ratio FLOAT,
-      matched_pairs INT,
-      created_at TIMESTAMP DEFAULT NOW()
-    )"
-  )
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS user_score_thresholds (
-      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      success_threshold FLOAT NOT NULL,
-      challenge_threshold FLOAT NOT NULL,
-      updated_at TIMESTAMP DEFAULT NOW()
-    )"
-  )
-
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_auth_attempts_username_ip_time ON auth_login_attempts(username, ip_address, attempted_at)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_score_history_user_time ON user_score_history(user_id, created_at)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_user_expiry ON user_sessions(user_id, expires_at)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_biometric_profiles_user_pair ON biometric_profiles(user_id, key_pair)")
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS audit_events (
-      id SERIAL PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT NOW(),
-      event_type VARCHAR(64) NOT NULL,
-      actor VARCHAR(64) NOT NULL,
-      user_id INT REFERENCES users(id) ON DELETE SET NULL,
-      ip_address VARCHAR(64),
-      request_id VARCHAR(64),
-      metadata JSONB
-    )"
-  )
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS biometric_attempts (
-      id SERIAL PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT NOW(),
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      outcome VARCHAR(24) NOT NULL,
-      score FLOAT,
-      coverage_ratio FLOAT,
-      matched_pairs INT,
-      payload_hash VARCHAR(128),
-      ip_address VARCHAR(64),
-      request_id VARCHAR(64),
-      label VARCHAR(16)
-    )"
-  )
-
-  DB.exec(
-    "CREATE TABLE IF NOT EXISTS evaluation_reports (
-      id SERIAL PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT NOW(),
-      report_type VARCHAR(64) NOT NULL,
-      sample_count INT DEFAULT 0,
-      far FLOAT,
-      frr FLOAT,
-      metadata JSONB
-    )"
-  )
-
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_audit_events_created_type ON audit_events(created_at DESC, event_type)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_audit_events_user_time ON audit_events(user_id, created_at DESC)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_bio_attempts_user_time ON biometric_attempts(user_id, created_at DESC)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_bio_attempts_outcome_time ON biometric_attempts(outcome, created_at DESC)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_bio_attempts_request_id ON biometric_attempts(request_id)")
-  DB.exec("CREATE INDEX IF NOT EXISTS idx_eval_reports_created ON evaluation_reports(created_at DESC)")
+  ensure_required_tables!
 rescue PG::Error => e
-  $logger.error "Unable to create auth/session support tables: #{e.message}"
+  $logger.error "Schema readiness check failed: #{e.message}"
   exit(1)
 end
 
@@ -995,6 +933,99 @@ get '/admin/api/feed' do
 
   service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
   json_success({ attempts: service.latest_attempts(limit: limit) })
+end
+
+post '/admin/api/attempt/:id/label' do
+  content_type :json
+  require_dashboard_control!
+
+  attempt_id = params['id'].to_i
+  return json_error('Invalid attempt id', 400, 'INVALID_ATTEMPT') if attempt_id <= 0
+
+  payload_raw = request.body.read
+  payload = payload_raw.nil? || payload_raw.strip.empty? ? {} : JSON.parse(payload_raw)
+  label = normalize_attempt_label(payload['label'])
+  return json_error('Label must be GENUINE, IMPOSTER, or UNLABELED', 400, 'INVALID_LABEL') if label == :invalid
+
+  updated = DB.exec_params('UPDATE biometric_attempts SET label = $1 WHERE id = $2', [label, attempt_id]).cmd_tuples
+  return json_error('Attempt not found', 404, 'ATTEMPT_NOT_FOUND') if updated == 0
+
+  log_audit_event(
+    event_type: 'LABEL_ATTEMPT',
+    actor: session[:admin_user] || 'token-admin',
+    metadata: { attempt_id: attempt_id, label: label }
+  )
+
+  json_success({ status: 'SUCCESS', attempt_id: attempt_id, label: label })
+rescue JSON::ParserError
+  json_error('Invalid JSON payload', 400, 'INVALID_JSON')
+end
+
+post '/admin/api/attempts/label-bulk' do
+  content_type :json
+  require_dashboard_control!
+
+  payload_raw = request.body.read
+  payload = payload_raw.nil? || payload_raw.strip.empty? ? {} : JSON.parse(payload_raw)
+  label = normalize_attempt_label(payload['label'])
+  return json_error('Label must be GENUINE, IMPOSTER, or UNLABELED', 400, 'INVALID_LABEL') if label == :invalid
+
+  clauses = []
+  params = []
+
+  if payload.key?('user_id') && !payload['user_id'].to_s.strip.empty?
+    user_id = payload['user_id'].to_i
+    return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+    params << user_id
+    clauses << "user_id = $#{params.length}"
+  end
+
+  if payload.key?('outcome') && !payload['outcome'].to_s.strip.empty?
+    params << payload['outcome'].to_s.strip.upcase
+    clauses << "outcome = $#{params.length}"
+  end
+
+  if payload.key?('from_time') && !payload['from_time'].to_s.strip.empty?
+    params << payload['from_time'].to_s
+    clauses << "created_at >= $#{params.length}::timestamp"
+  end
+
+  if payload.key?('to_time') && !payload['to_time'].to_s.strip.empty?
+    params << payload['to_time'].to_s
+    clauses << "created_at <= $#{params.length}::timestamp"
+  end
+
+  return json_error('At least one filter is required for bulk labeling', 400, 'MISSING_FILTER') if clauses.empty?
+
+  params << label
+  label_param_idx = params.length
+  where_sql = clauses.join(' AND ')
+
+  updated = DB.exec_params(
+    "UPDATE biometric_attempts
+     SET label = $#{label_param_idx}
+     WHERE #{where_sql}",
+    params
+  ).cmd_tuples
+
+  log_audit_event(
+    event_type: 'LABEL_ATTEMPT_BULK',
+    actor: session[:admin_user] || 'token-admin',
+    metadata: {
+      label: label,
+      filters: {
+        user_id: payload['user_id'],
+        outcome: payload['outcome'],
+        from_time: payload['from_time'],
+        to_time: payload['to_time']
+      },
+      updated: updated
+    }
+  )
+
+  json_success({ status: 'SUCCESS', updated: updated, label: label })
+rescue JSON::ParserError
+  json_error('Invalid JSON payload', 400, 'INVALID_JSON')
 end
 
 get '/admin/api/user/:user_id' do
