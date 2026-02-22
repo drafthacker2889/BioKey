@@ -8,6 +8,13 @@ It includes:
 - **PostgreSQL database** for user profiles and access logs
 - **Native C math engine** for distance score calculation
 
+Android client architecture is now **MVVM**:
+- `MainActivity` (entry only)
+- `ui/BioKeyApp.kt` (screens)
+- `viewmodel/BioKeyViewModel.kt` (state + actions)
+- `model/BioKeyModels.kt` (models + parsing + capture helpers)
+- `data/BioKeyApiClient.kt` (network layer)
+
 ---
 
 ## Project Structure
@@ -125,11 +132,8 @@ cd android-client
 (Windows: `gradlew.bat`)
 
 ### Compose/Kotlin Compatibility
-Project uses:
-- Kotlin plugin: `1.9.20`
-- Compose compiler extension: `1.5.4`
-
-This pairing is already fixed in `android-client/app/build.gradle.kts`.
+Project currently uses Kotlin + Compose plugin configuration from the Gradle files in `android-client/`.
+If Android Studio requests upgrades/downgrades, keep Kotlin/Compose/AGP versions aligned.
 
 ---
 
@@ -174,6 +178,18 @@ If phone cannot connect:
 ---
 
 ## API Reference
+
+## `POST /auth/register`
+Creates a username/password account.
+
+## `POST /auth/login`
+Returns session token + user details.
+
+## `GET /auth/profile`
+Returns authenticated profile summary (`Authorization: Bearer <token>`).
+
+## `POST /auth/logout`
+Invalidates the current session token.
 
 ## `POST /train`
 Stores/updates biometric profile.
@@ -263,3 +279,12 @@ This is a prototype implementation for development/testing. Before production us
    - Phone: `http://<PC_LAN_IP>:4567`
    - Emulator: `http://10.0.2.2:4567`
 5. Tap **Train**, then **Login**.
+
+---
+
+## Phase Status
+
+- ✅ Phase 1: Real typing-event capture (replaced synthetic timings)
+- ✅ Phase 2: Account auth/session API + persistent session in app
+- ✅ Phase 3: MVVM refactor (`ui`, `viewmodel`, `model`, `data` split)
+- 🔜 Next recommended phase: Retrofit/OkHttp + token refresh/error mapping + production hardening
