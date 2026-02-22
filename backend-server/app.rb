@@ -899,7 +899,9 @@ post '/admin/login' do
     redirect '/admin'
   else
     log_audit_event(event_type: 'ADMIN_LOGIN', actor: username.empty? ? 'unknown' : username, metadata: { success: false })
-    halt 401, 'Invalid admin credentials'
+    @error_message = 'Invalid admin credentials. Please check username/password and try again.'
+    status 401
+    erb :admin_login
   end
 end
 

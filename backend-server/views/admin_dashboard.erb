@@ -7,39 +7,57 @@
 </head>
 <body>
   <main class="container">
-    <header class="topbar panel">
-      <div>
-        <h1>BioKey Dashboard</h1>
-        <p id="statusLine">Loading status...</p>
+    <header class="panel topbar">
+      <div class="topbar-title">
+        <p class="eyebrow">BioKey Security Console</p>
+        <h1>Live Monitoring Dashboard</h1>
+        <p id="statusLine" class="muted">Loading status...</p>
       </div>
       <div class="top-actions">
-        <label for="modeToggle">Control Mode</label>
-        <input id="modeToggle" type="checkbox" />
-        <a href="/admin/login">Admin Login</a>
-        <form method="post" action="/admin/logout">
-          <button type="submit">Logout</button>
+        <span id="systemPill" class="pill">System: --</span>
+        <span id="adminPill" class="pill">Admin: --</span>
+        <label class="switch" for="modeToggle">
+          <input id="modeToggle" type="checkbox" />
+          <span class="slider"></span>
+          <span>Control Mode</span>
+        </label>
+        <a class="btn btn-secondary" href="/admin/login">Admin Login</a>
+        <form method="post" action="/admin/logout" class="inline-form">
+          <button type="submit" class="btn">Logout</button>
         </form>
       </div>
     </header>
 
     <section class="grid">
       <article class="panel">
-        <h2>Overview</h2>
-        <pre id="overviewBox">Loading...</pre>
+        <div class="panel-head">
+          <h2>Overview</h2>
+          <span class="muted" id="liveMeta">Waiting for refresh...</span>
+        </div>
+        <div id="overviewGrid" class="overview-grid"></div>
+        <div class="outcomes-wrap">
+          <h3>7d Outcomes</h3>
+          <div id="outcomesList" class="chips"></div>
+        </div>
+        <pre id="overviewBox" class="json-box">Loading...</pre>
       </article>
 
       <article class="panel">
         <h2>User Detail</h2>
         <div class="row">
           <input id="userIdInput" type="number" min="1" placeholder="User ID" />
-          <button id="loadUserBtn" type="button">Load</button>
+          <button id="loadUserBtn" type="button" class="btn">Load User</button>
         </div>
-        <pre id="userBox">No user selected.</pre>
+        <pre id="userBox" class="json-box">No user selected.</pre>
       </article>
 
       <article class="panel full">
-        <h2>Live Feed</h2>
-        <table>
+        <div class="panel-head">
+          <h2>Live Feed</h2>
+          <span class="muted">Auto-refresh: 6s</span>
+        </div>
+        <div class="table-wrap">
+        <table class="feed-table">
           <thead>
             <tr>
               <th>Time</th>
@@ -56,19 +74,20 @@
           </thead>
           <tbody id="feedBody"></tbody>
         </table>
+        </div>
       </article>
 
       <article class="panel full">
         <h2>Control Panel</h2>
         <div class="controls">
           <input id="controlUserId" type="number" min="1" placeholder="User ID" />
-          <button data-action="recalibrate">Recalibrate Thresholds</button>
-          <button data-action="reset">Reset User Profile</button>
-          <button data-action="export">Export Dataset</button>
-          <button data-action="evaluate">Run Evaluation</button>
-          <button data-action="cleanup">Cleanup Expired Sessions</button>
+          <button data-action="recalibrate" class="btn">Recalibrate Thresholds</button>
+          <button data-action="reset" class="btn btn-danger">Reset User Profile</button>
+          <button data-action="export" class="btn btn-secondary">Export Dataset</button>
+          <button data-action="evaluate" class="btn btn-secondary">Run Evaluation</button>
+          <button data-action="cleanup" class="btn btn-secondary">Cleanup Expired Sessions</button>
         </div>
-        <pre id="controlBox">Control mode is disabled.</pre>
+        <pre id="controlBox" class="json-box">Control mode is disabled.</pre>
       </article>
     </section>
   </main>

@@ -4,6 +4,11 @@ const userBox = document.getElementById('userBox');
 const controlBox = document.getElementById('controlBox');
 const feedBody = document.getElementById('feedBody');
 const statusLine = document.getElementById('statusLine');
+const overviewGrid = document.getElementById('overviewGrid');
+const outcomesList = document.getElementById('outcomesList');
+const liveMeta = document.getElementById('liveMeta');
+const systemPill = document.getElementById('systemPill');
+const adminPill = document.getElementById('adminPill');
 
 let state = { canControl: false, isAdmin: false };
 
@@ -27,15 +32,95 @@ async function apiPost(path, payload) {
 function updateControlState() {
   const enabled = modeToggle.checked && state.canControl;
   document.querySelectorAll('[data-action]').forEach((btn) => { btn.disabled = !enabled; });
+  document.querySelectorAll('button[data-action="mark-genuine"], button[data-action="mark-imposter"]').forEach((btn) => {
+    btn.disabled = !enabled;
+  });
   controlBox.textContent = enabled ? 'Control mode enabled.' : 'Control mode is disabled.';
+}
+
+function formatValue(value) {
+  if (value === null || value === undefined || value === '') return '--';
+  if (typeof value === 'number') return Number.isInteger(value) ? value.toString() : value.toFixed(4);
+  return String(value);
+}
+
+function formatTime(value) {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+}
+
+function badgeClassForOutcome(outcome) {
+  const normalized = String(outcome || '').toUpperCase();
+  if (normalized === 'SUCCESS') return 'success';
+  if (normalized === 'CHALLENGE') return 'challenge';
+  if (normalized === 'DENIED') return 'denied';
+  return '';
+}
+
+function rowClassForOutcome(outcome) {
+  const normalized = String(outcome || '').toUpperCase();
+  if (normalized === 'SUCCESS') return 'success';
+  if (normalized === 'CHALLENGE') return 'challenge';
+  if (normalized === 'DENIED') return 'denied';
+  return '';
+}
+
+function renderOverview(payload) {
+  if (!overviewGrid || !outcomesList) return;
+
+  const metrics = [
+    { label: 'Attempts (24h)', value: payload.attempts_24h },
+    { label: 'Attempts (7d)', value: payload.attempts_7d },
+    { label: 'Avg Coverage (24h)', value: payload.avg_coverage_24h },
+    { label: 'Uptime (sec)', value: payload.uptime_seconds },
+    { label: 'Rate Limit Hits (24h)', value: payload.rate_limit_hits_24h },
+    { label: 'Lockouts (24h)', value: payload.lockouts_24h }
+  ];
+
+  overviewGrid.innerHTML = metrics.map((metric) => `
+    <article class="metric">
+      <p class="metric-label">${metric.label}</p>
+      <p class="metric-value">${formatValue(metric.value)}</p>
+    </article>
+  `).join('');
+
+  const outcomes = payload.outcomes_7d || {};
+  const chips = Object.keys(outcomes).length === 0
+    ? '<span class="chip">No outcomes</span>'
+    : Object.entries(outcomes).map(([name, count]) => {
+        const cls = badgeClassForOutcome(name) || 'warn';
+        return `<span class="chip ${cls}">${name}: ${count}</span>`;
+      }).join('');
+
+  outcomesList.innerHTML = chips;
 }
 
 function renderFeed(attempts) {
   feedBody.innerHTML = '';
   attempts.forEach((item) => {
     const tr = document.createElement('tr');
-    const safeLabel = item.label || '';
-    tr.innerHTML = `<td>${item.created_at || ''}</td><td>${item.user_id || ''}</td><td>${item.outcome || ''}</td><td>${item.score ?? ''}</td><td>${item.coverage_ratio ?? ''}</td><td>${item.matched_pairs ?? ''}</td><td>${item.ip_address || ''}</td><td>${item.request_id || ''}</td><td>${safeLabel}</td><td><button data-action="mark-genuine" data-id="${item.id}">Genuine</button> <button data-action="mark-imposter" data-id="${item.id}">Imposter</button></td>`;
+    const safeLabel = item.label || 'UNLABELED';
+    const outcome = item.outcome || '--';
+    const outcomeClass = badgeClassForOutcome(outcome);
+    const rowClass = rowClassForOutcome(outcome);
+    tr.className = `feed-row ${rowClass}`.trim();
+    tr.innerHTML = `
+      <td>${formatTime(item.created_at)}</td>
+      <td>${item.user_id || '--'}</td>
+      <td><span class="badge ${outcomeClass}">${outcome}</span></td>
+      <td>${formatValue(item.score)}</td>
+      <td>${formatValue(item.coverage_ratio)}</td>
+      <td>${formatValue(item.matched_pairs)}</td>
+      <td>${item.ip_address || '--'}</td>
+      <td>${item.request_id || '--'}</td>
+      <td><span class="badge label">${safeLabel}</span></td>
+      <td>
+        <button class="btn mini-btn" data-action="mark-genuine" data-id="${item.id}">Genuine</button>
+        <button class="btn btn-danger mini-btn" data-action="mark-imposter" data-id="${item.id}">Imposter</button>
+      </td>
+    `;
     feedBody.appendChild(tr);
   });
 
@@ -70,6 +155,14 @@ async function loadOverview() {
   state.canControl = !!payload.can_control;
   state.isAdmin = !!payload.is_admin;
   statusLine.textContent = `DB: ${payload.db_connected ? 'connected' : 'error'} | Uptime: ${payload.uptime_seconds}s | Admin: ${state.isAdmin ? 'yes' : 'no'}`;
+  systemPill.textContent = payload.db_connected ? 'System: Healthy' : 'System: DB Error';
+  systemPill.className = `pill ${payload.db_connected ? 'good' : 'bad'}`;
+  adminPill.textContent = state.isAdmin ? 'Admin: Authenticated' : 'Admin: Read-only';
+  adminPill.className = `pill ${state.isAdmin ? 'good' : ''}`;
+  if (liveMeta) {
+    liveMeta.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+  }
+  renderOverview(payload);
   overviewBox.textContent = JSON.stringify(payload, null, 2);
   updateControlState();
 }
@@ -134,4 +227,7 @@ document.querySelectorAll('[data-action]').forEach((btn) => {
 
 loadOverview();
 loadFeed();
-setInterval(loadFeed, 10000);
+setInterval(async () => {
+  await loadOverview();
+  await loadFeed();
+}, 6000);

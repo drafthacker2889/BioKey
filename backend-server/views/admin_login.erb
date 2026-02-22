@@ -6,17 +6,26 @@
   <link rel="stylesheet" href="/dashboard.css" />
 </head>
 <body>
-  <main class="container narrow">
-    <h1>BioKey Admin Login</h1>
-    <p>Control actions require admin authentication.</p>
-    <form method="post" action="/admin/login" class="panel">
-      <label>Username</label>
-      <input type="text" name="username" autocomplete="username" required />
-      <label>Password</label>
-      <input type="password" name="password" autocomplete="current-password" required />
-      <button type="submit">Sign in</button>
-    </form>
-    <p><a href="/admin">Back to dashboard</a></p>
+  <main class="container narrow login-shell">
+    <section class="panel login-panel">
+      <p class="eyebrow">BioKey Security Console</p>
+      <h1>Admin Sign In</h1>
+      <p class="muted">Control actions require elevated authentication.</p>
+
+      <% if defined?(@error_message) && @error_message %>
+        <div class="alert"><%= @error_message %></div>
+      <% end %>
+
+      <form method="post" action="/admin/login" class="stack-form">
+        <label for="username">Username</label>
+        <input id="username" type="text" name="username" autocomplete="username" required />
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" required />
+        <button type="submit" class="btn">Sign in</button>
+      </form>
+
+      <p class="login-back"><a href="/admin">Back to dashboard</a></p>
+    </section>
   </main>
 </body>
 </html>
