@@ -115,6 +115,84 @@ def normalize_timing_sample(sample, index)
   nil
 end
 
+def update_running_stats(old_mean, old_m2, old_count, new_value)
+  new_count = old_count + 1
+  delta = new_value - old_mean
+  new_mean = old_mean + (delta / new_count)
+  delta2 = new_value - new_mean
+  new_m2 = old_m2 + (delta * delta2)
+  new_std = new_count > 1 ? Math.sqrt(new_m2 / (new_count - 1)) : 0.0
+
+  {
+    mean: new_mean,
+    m2: new_m2,
+    count: new_count,
+    std: new_std
+  }
+end
+
+def upsert_biometric_pair(user_id, pair, dwell, flight)
+  DB.transaction do |conn|
+    current = conn.exec_params(
+      "SELECT avg_dwell_time, avg_flight_time, std_dev_dwell, std_dev_flight, sample_count, m2_dwell, m2_flight
+       FROM biometric_profiles
+       WHERE user_id = $1 AND key_pair = $2
+       FOR UPDATE",
+      [user_id, pair]
+    )
+
+    if current.ntuples == 0
+      conn.exec_params(
+        "INSERT INTO biometric_profiles (
+           user_id, key_pair, avg_dwell_time, avg_flight_time, std_dev_dwell, std_dev_flight, sample_count, m2_dwell, m2_flight
+         ) VALUES ($1, $2, $3, $4, 0, 0, 1, 0, 0)",
+        [user_id, pair, dwell, flight]
+      )
+      next
+    end
+
+    row = current[0]
+    sample_count = row['sample_count'].to_i
+
+    dwell_stats = update_running_stats(
+      row['avg_dwell_time'].to_f,
+      row['m2_dwell'].to_f,
+      sample_count,
+      dwell
+    )
+
+    flight_stats = update_running_stats(
+      row['avg_flight_time'].to_f,
+      row['m2_flight'].to_f,
+      sample_count,
+      flight
+    )
+
+    conn.exec_params(
+      "UPDATE biometric_profiles
+       SET avg_dwell_time = $1,
+           avg_flight_time = $2,
+           std_dev_dwell = $3,
+           std_dev_flight = $4,
+           sample_count = $5,
+           m2_dwell = $6,
+           m2_flight = $7
+       WHERE user_id = $8 AND key_pair = $9",
+      [
+        dwell_stats[:mean],
+        flight_stats[:mean],
+        dwell_stats[:std],
+        flight_stats[:std],
+        dwell_stats[:count],
+        dwell_stats[:m2],
+        flight_stats[:m2],
+        user_id,
+        pair
+      ]
+    )
+  end
+end
+
 # Route 1: The Enrollment (Training)
 post '/train' do
   content_type :json
@@ -133,18 +211,7 @@ post '/train' do
       sample = normalize_timing_sample(t, index)
       next if sample.nil?
 
-      # Use ON CONFLICT to update the existing rhythm and increment the count
-      # Note: Requires a UNIQUE constraint on (user_id, key_pair) in your schema
-      DB.exec_params(
-        "INSERT INTO biometric_profiles (user_id, key_pair, avg_dwell_time, avg_flight_time, sample_count) 
-         VALUES ($1, $2, $3, $4, 1)
-         ON CONFLICT (user_id, key_pair) 
-         DO UPDATE SET 
-           avg_dwell_time = (biometric_profiles.avg_dwell_time + EXCLUDED.avg_dwell_time) / 2,
-           avg_flight_time = (biometric_profiles.avg_flight_time + EXCLUDED.avg_flight_time) / 2,
-           sample_count = biometric_profiles.sample_count + 1", 
-        [user_id, sample[:pair], sample[:dwell], sample[:flight]]
-      )
+      upsert_biometric_pair(user_id, sample[:pair], sample[:dwell], sample[:flight])
     end
     $logger.info "Updated profile for User ID #{user_id}"
     { status: "Profile Updated" }.to_json
@@ -203,6 +270,10 @@ post '/login' do
 end
 
 begin
+  DB.exec("ALTER TABLE biometric_profiles ADD COLUMN IF NOT EXISTS std_dev_dwell FLOAT DEFAULT 0")
+  DB.exec("ALTER TABLE biometric_profiles ADD COLUMN IF NOT EXISTS m2_dwell FLOAT DEFAULT 0")
+  DB.exec("ALTER TABLE biometric_profiles ADD COLUMN IF NOT EXISTS m2_flight FLOAT DEFAULT 0")
+
   DB.exec(
     "CREATE TABLE IF NOT EXISTS user_sessions (
       id SERIAL PRIMARY KEY,
@@ -223,7 +294,29 @@ begin
     )"
   )
 
+  DB.exec(
+    "CREATE TABLE IF NOT EXISTS user_score_history (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      score FLOAT NOT NULL,
+      outcome VARCHAR(16) NOT NULL,
+      coverage_ratio FLOAT,
+      matched_pairs INT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )"
+  )
+
+  DB.exec(
+    "CREATE TABLE IF NOT EXISTS user_score_thresholds (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      success_threshold FLOAT NOT NULL,
+      challenge_threshold FLOAT NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )"
+  )
+
   DB.exec("CREATE INDEX IF NOT EXISTS idx_auth_attempts_username_ip_time ON auth_login_attempts(username, ip_address, attempted_at)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_score_history_user_time ON user_score_history(user_id, created_at)")
 rescue PG::Error => e
   $logger.error "Unable to create auth/session support tables: #{e.message}"
   exit(1)

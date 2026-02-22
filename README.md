@@ -320,7 +320,8 @@ This is explicitly a prototype. For real-world use, still harden and verify:
 - ✅ Phase 5: Retrofit API service layer + `/auth/refresh` endpoint + stricter auth/timing validation
 - ✅ Phase 6: `bcrypt` password hashing (with legacy hash migration) + single-session revocation policy
 - ✅ Phase 7: auth abuse controls (per-IP rate limiting, login lockout policy, enriched audit events)
-- 🔜 Next recommended phase: Phase 8 (biometric scoring quality + calibration)
+- ✅ Phase 8: variance-aware biometric scoring (normalization, weighting, outlier resistance, coverage gating, per-user threshold calibration)
+- 🔜 Next recommended phase: Phase 9 (security/data/API reliability hardening)
 
 ---
 
