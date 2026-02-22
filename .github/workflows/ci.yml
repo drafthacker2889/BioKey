@@ -24,7 +24,9 @@ jobs:
           working-directory: backend-server
 
       - name: Run backend tests
-        run: ruby -Itest test/auth_service_test.rb
+        run: |
+          ruby -Itest test/auth_service_test.rb
+          ruby -Itest test/evaluation_service_test.rb
 
   android-unit-tests:
     runs-on: ubuntu-latest

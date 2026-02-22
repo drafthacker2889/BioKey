@@ -126,6 +126,7 @@ ruby app.rb
 ```bash
 cd backend-server
 ruby -Itest test/auth_service_test.rb
+ruby -Itest test/evaluation_service_test.rb
 ```
 
 Backend is configured to listen on:
@@ -348,6 +349,7 @@ This is explicitly a prototype. For real-world use, still harden and verify:
 - ✅ Phase 8: variance-aware biometric scoring (normalization, weighting, outlier resistance, coverage gating, per-user threshold calibration)
 - ✅ Phase 9: API/version contract hardening, request correlation headers, migration runner scaffold, and DB index reinforcement
 - ✅ Phase 10: backend+android automated tests, CI workflow gates on push/PR, and documented validation commands
+- ✅ Phase 11: desktop dashboard (read-only + control toggle), audited admin actions, biometric attempt records, and evaluation/export tooling
 
 ---
 
@@ -357,7 +359,46 @@ Workflow file: `.github/workflows/ci.yml`
 
 Runs on push/PR to `main`:
 - backend tests (`ruby -Itest test/auth_service_test.rb`)
+- backend evaluation tests (`ruby -Itest test/evaluation_service_test.rb`)
 - Android unit tests (`./gradlew testDebugUnitTest --no-daemon`)
+
+---
+
+## Phase 11 Dashboard + Evaluation
+
+### Dashboard
+
+- Open: `http://localhost:4567/admin`
+- Login page: `http://localhost:4567/admin/login`
+- Read-only access: localhost is allowed by default.
+- Control actions: require admin login or `X-Admin-Token`.
+
+Admin env vars:
+- `ADMIN_USER` (default: `admin`)
+- `ADMIN_PASSWORD_HASH` (bcrypt hash)
+- `ADMIN_TOKEN` (optional API token)
+
+Generate bcrypt hash:
+```bash
+ruby -rbcrypt -e "puts BCrypt::Password.create('change_me')"
+```
+
+### Evaluation / Dataset Export
+
+Run from repo root:
+```bash
+ruby tools/export_dataset.rb json
+ruby tools/evaluate_dataset.rb
+```
+
+Artifacts:
+- dataset exports in `exports/`
+- evaluation report in `docs/evaluation.md`
+
+Phase 11 tables (migration `backend-server/db/migrations/002_phase11_dashboard_eval.sql`):
+- `audit_events`
+- `biometric_attempts`
+- `evaluation_reports`
 
 ---
 

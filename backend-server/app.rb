@@ -9,6 +9,8 @@ require 'bcrypt'
 require 'thread'
 require 'time'
 require_relative 'lib/auth_service'
+require_relative 'lib/dashboard_service'
+require_relative 'lib/evaluation_service'
 
 class ApiVersionMiddleware
   def initialize(app)
@@ -30,6 +32,8 @@ end
 
 set :bind, '0.0.0.0'
 set :port, 4567
+set :sessions, true
+set :session_secret, ENV['APP_SESSION_SECRET'] || 'biokey_dev_session_secret_change_me'
 use ApiVersionMiddleware
 
 # Configure logging
@@ -40,6 +44,7 @@ AUTH_RATE_LIMIT_MAX = 30
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
 AUTH_LOCKOUT_THRESHOLD = 5
 AUTH_LOCKOUT_WINDOW_MINUTES = 15
+APP_BOOT_TIME = Time.now
 
 RATE_LIMIT_MUTEX = Mutex.new
 RATE_LIMIT_BUCKETS = {}
@@ -109,6 +114,65 @@ rescue
   'legacy'
 end
 
+def localhost_request?
+  ip = request.ip.to_s
+  return true if ['127.0.0.1', '::1', 'localhost'].include?(ip)
+
+  forwarded = request.env['HTTP_X_FORWARDED_FOR'].to_s
+  forwarded.split(',').map(&:strip).any? { |part| ['127.0.0.1', '::1', 'localhost'].include?(part) }
+end
+
+def admin_username
+  ENV['ADMIN_USER'] || 'admin'
+end
+
+def admin_password_hash
+  ENV['ADMIN_PASSWORD_HASH'].to_s
+end
+
+def admin_token
+  ENV['ADMIN_TOKEN'].to_s
+end
+
+def admin_authenticated?
+  session[:admin_user] == admin_username
+end
+
+def admin_token_valid?
+  token = request.env['HTTP_X_ADMIN_TOKEN'].to_s
+  !admin_token.empty? && token == admin_token
+end
+
+def can_read_dashboard?
+  localhost_request? || admin_authenticated? || admin_token_valid?
+end
+
+def can_control_dashboard?
+  admin_authenticated? || admin_token_valid?
+end
+
+def verify_admin_password(password)
+  return false if password.nil? || password.empty? || admin_password_hash.empty?
+
+  BCrypt::Password.new(admin_password_hash) == password
+rescue BCrypt::Errors::InvalidHash
+  false
+end
+
+def require_dashboard_read!
+  return if can_read_dashboard?
+
+  content_type :json if request.path_info.start_with?('/admin/api')
+  halt 403, (request.path_info.start_with?('/admin/api') ? json_error('Dashboard read access denied', 403, 'ADMIN_READ_FORBIDDEN') : 'Forbidden')
+end
+
+def require_dashboard_control!
+  return if can_control_dashboard?
+
+  content_type :json
+  halt 403, json_error('Dashboard control access denied', 403, 'ADMIN_CONTROL_FORBIDDEN')
+end
+
 def json_success(payload = {}, status_code = 200)
   status status_code
   body = payload.is_a?(Hash) ? payload : { data: payload }
@@ -132,6 +196,46 @@ def json_error(message, status_code = 500, code = 'ERROR', details = nil)
   }
   error_body[:error][:details] = details unless details.nil?
   error_body.to_json
+end
+
+def log_audit_event(event_type:, actor: 'system', user_id: nil, metadata: {})
+  DB.exec_params(
+    'INSERT INTO audit_events (event_type, actor, user_id, ip_address, request_id, metadata) VALUES ($1, $2, $3, $4, $5, $6::jsonb)',
+    [
+      event_type.to_s[0, 64],
+      actor.to_s[0, 64],
+      user_id,
+      client_ip,
+      current_request_id,
+      metadata.to_json
+    ]
+  )
+rescue PG::Error => e
+  $logger.warn "Failed to write audit event #{event_type}: #{e.message}"
+end
+
+def log_biometric_attempt(user_id:, outcome:, score:, coverage_ratio:, matched_pairs:, timings: nil)
+  payload_hash = begin
+    timings.nil? ? nil : Digest::SHA256.hexdigest(timings.to_json)
+  rescue
+    nil
+  end
+
+  DB.exec_params(
+    'INSERT INTO biometric_attempts (user_id, outcome, score, coverage_ratio, matched_pairs, payload_hash, ip_address, request_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+    [
+      user_id,
+      outcome.to_s[0, 24],
+      score,
+      coverage_ratio,
+      matched_pairs,
+      payload_hash,
+      client_ip,
+      current_request_id
+    ]
+  )
+rescue PG::Error => e
+  $logger.warn "Failed to write biometric attempt for user #{user_id}: #{e.message}"
 end
 
 def valid_username?(username)
@@ -327,6 +431,15 @@ post '/login' do
       details = result.dup
       details.delete(:status)
       message = details.delete(:message) || 'Biometric verification failed'
+      log_biometric_attempt(
+        user_id: user_id,
+        outcome: 'ERROR',
+        score: result[:score],
+        coverage_ratio: result[:coverage_ratio],
+        matched_pairs: result[:matched_pairs],
+        timings: timings
+      )
+      log_access_event(user_id: user_id, verdict: 'BIO_ERR', score: result[:score])
       return json_error(message, 422, 'BIOMETRIC_VALIDATION_FAILED', details)
     end
 
@@ -337,6 +450,14 @@ post '/login' do
              else 'BIO_ERR'
              end
     log_access_event(user_id: user_id, verdict: verdict_code, score: result[:score])
+    log_biometric_attempt(
+      user_id: user_id,
+      outcome: result[:status],
+      score: result[:score],
+      coverage_ratio: result[:coverage_ratio],
+      matched_pairs: result[:matched_pairs],
+      timings: timings
+    )
     
     # Log the result status
     $logger.info "Login attempt for User #{user_id}: #{result[:status]} (Score: #{result[:score]})"
@@ -405,6 +526,54 @@ begin
   DB.exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_user_expiry ON user_sessions(user_id, expires_at)")
   DB.exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at)")
   DB.exec("CREATE INDEX IF NOT EXISTS idx_biometric_profiles_user_pair ON biometric_profiles(user_id, key_pair)")
+
+  DB.exec(
+    "CREATE TABLE IF NOT EXISTS audit_events (
+      id SERIAL PRIMARY KEY,
+      created_at TIMESTAMP DEFAULT NOW(),
+      event_type VARCHAR(64) NOT NULL,
+      actor VARCHAR(64) NOT NULL,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      ip_address VARCHAR(64),
+      request_id VARCHAR(64),
+      metadata JSONB
+    )"
+  )
+
+  DB.exec(
+    "CREATE TABLE IF NOT EXISTS biometric_attempts (
+      id SERIAL PRIMARY KEY,
+      created_at TIMESTAMP DEFAULT NOW(),
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      outcome VARCHAR(24) NOT NULL,
+      score FLOAT,
+      coverage_ratio FLOAT,
+      matched_pairs INT,
+      payload_hash VARCHAR(128),
+      ip_address VARCHAR(64),
+      request_id VARCHAR(64),
+      label VARCHAR(16)
+    )"
+  )
+
+  DB.exec(
+    "CREATE TABLE IF NOT EXISTS evaluation_reports (
+      id SERIAL PRIMARY KEY,
+      created_at TIMESTAMP DEFAULT NOW(),
+      report_type VARCHAR(64) NOT NULL,
+      sample_count INT DEFAULT 0,
+      far FLOAT,
+      frr FLOAT,
+      metadata JSONB
+    )"
+  )
+
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_audit_events_created_type ON audit_events(created_at DESC, event_type)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_audit_events_user_time ON audit_events(user_id, created_at DESC)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_bio_attempts_user_time ON biometric_attempts(user_id, created_at DESC)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_bio_attempts_outcome_time ON biometric_attempts(outcome, created_at DESC)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_bio_attempts_request_id ON biometric_attempts(request_id)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_eval_reports_created ON evaluation_reports(created_at DESC)")
 rescue PG::Error => e
   $logger.error "Unable to create auth/session support tables: #{e.message}"
   exit(1)
@@ -776,4 +945,179 @@ def login_locked_out?(username, ip_address)
 rescue PG::Error => e
   $logger.warn "Failed to evaluate lockout for #{username}@#{ip_address}: #{e.message}"
   false
+end
+
+get '/admin/login' do
+  erb :admin_login
+end
+
+post '/admin/login' do
+  username = params['username'].to_s.strip
+  password = params['password'].to_s
+
+  if username == admin_username && verify_admin_password(password)
+    session[:admin_user] = username
+    log_audit_event(event_type: 'ADMIN_LOGIN', actor: username, metadata: { success: true })
+    redirect '/admin'
+  else
+    log_audit_event(event_type: 'ADMIN_LOGIN', actor: username.empty? ? 'unknown' : username, metadata: { success: false })
+    halt 401, 'Invalid admin credentials'
+  end
+end
+
+post '/admin/logout' do
+  actor = session[:admin_user] || 'unknown'
+  session.delete(:admin_user)
+  log_audit_event(event_type: 'ADMIN_LOGOUT', actor: actor)
+  redirect '/admin/login'
+end
+
+get '/admin' do
+  require_dashboard_read!
+  erb :admin_dashboard
+end
+
+get '/admin/api/overview' do
+  content_type :json
+  require_dashboard_read!
+
+  service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
+  json_success(service.overview(can_control: can_control_dashboard?, is_admin: admin_authenticated?))
+end
+
+get '/admin/api/feed' do
+  content_type :json
+  require_dashboard_read!
+
+  limit = params['limit']&.to_i || 50
+  limit = 200 if limit > 200
+  limit = 1 if limit < 1
+
+  service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
+  json_success({ attempts: service.latest_attempts(limit: limit) })
+end
+
+get '/admin/api/user/:user_id' do
+  content_type :json
+  require_dashboard_read!
+
+  user_id = params['user_id'].to_i
+  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+
+  service = DashboardService.new(db: DB, uptime_seconds: Time.now - APP_BOOT_TIME)
+  json_success(service.user_detail(user_id))
+end
+
+post '/admin/api/recalibrate/:user_id' do
+  content_type :json
+  require_dashboard_control!
+
+  user_id = params['user_id'].to_i
+  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+
+  thresholds = AuthService.calibrated_thresholds_for_user(user_id)
+  log_audit_event(
+    event_type: 'ADMIN_RECALIBRATE',
+    actor: session[:admin_user] || 'token-admin',
+    user_id: user_id,
+    metadata: thresholds
+  )
+
+  json_success({ status: 'SUCCESS', user_id: user_id, thresholds: thresholds })
+end
+
+post '/admin/api/reset-user/:user_id' do
+  content_type :json
+  require_dashboard_control!
+
+  user_id = params['user_id'].to_i
+  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+
+  profile_deleted = DB.exec_params('DELETE FROM biometric_profiles WHERE user_id = $1', [user_id]).cmd_tuples
+  history_deleted = DB.exec_params('DELETE FROM user_score_history WHERE user_id = $1', [user_id]).cmd_tuples
+  threshold_deleted = DB.exec_params('DELETE FROM user_score_thresholds WHERE user_id = $1', [user_id]).cmd_tuples
+
+  log_audit_event(
+    event_type: 'RESET_USER',
+    actor: session[:admin_user] || 'token-admin',
+    user_id: user_id,
+    metadata: {
+      profile_deleted: profile_deleted,
+      history_deleted: history_deleted,
+      threshold_deleted: threshold_deleted
+    }
+  )
+
+  json_success({
+    status: 'SUCCESS',
+    user_id: user_id,
+    profile_deleted: profile_deleted,
+    history_deleted: history_deleted,
+    threshold_deleted: threshold_deleted
+  })
+end
+
+post '/admin/api/export-dataset' do
+  content_type :json
+  require_dashboard_control!
+
+  body_data = request.body.read
+  payload = body_data.nil? || body_data.strip.empty? ? {} : JSON.parse(body_data)
+
+  format = payload['format'].to_s.downcase
+  format = 'json' unless ['json', 'csv'].include?(format)
+
+  suffix = Time.now.utc.strftime('%Y%m%d_%H%M%S')
+  extension = format == 'csv' ? 'csv' : 'json'
+  output_path = File.expand_path("../exports/dataset_#{suffix}.#{extension}", __dir__)
+
+  service = EvaluationService.new(db: DB)
+  result = service.export_dataset(
+    file_path: output_path,
+    format: format,
+    user_id: payload['user_id'],
+    from_time: payload['from_time'],
+    to_time: payload['to_time'],
+    outcome: payload['outcome']
+  )
+
+  log_audit_event(
+    event_type: 'EXPORT_DATASET',
+    actor: session[:admin_user] || 'token-admin',
+    metadata: result
+  )
+
+  json_success({ status: 'SUCCESS', export: result })
+rescue JSON::ParserError
+  json_error('Invalid JSON payload', 400, 'INVALID_JSON')
+end
+
+post '/admin/api/run-evaluation' do
+  content_type :json
+  require_dashboard_control!
+
+  service = EvaluationService.new(db: DB)
+  report = service.evaluate_and_write
+
+  log_audit_event(
+    event_type: 'RUN_EVALUATION',
+    actor: session[:admin_user] || 'token-admin',
+    metadata: report
+  )
+
+  json_success({ status: 'SUCCESS', evaluation: report })
+end
+
+post '/admin/api/cleanup-sessions' do
+  content_type :json
+  require_dashboard_control!
+
+  deleted = DB.exec('DELETE FROM user_sessions WHERE expires_at <= NOW()').cmd_tuples
+  log_audit_event(
+    event_type: 'CLEANUP_SESSIONS',
+    actor: session[:admin_user] || 'token-admin',
+    metadata: { deleted: deleted }
+  )
+
+  json_success({ status: 'SUCCESS', deleted_sessions: deleted })
 end

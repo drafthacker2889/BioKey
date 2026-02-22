@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>BioKey Admin Login</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+  <main class="container narrow">
+    <h1>BioKey Admin Login</h1>
+    <p>Control actions require admin authentication.</p>
+    <form method="post" action="/admin/login" class="panel">
+      <label>Username</label>
+      <input type="text" name="username" autocomplete="username" required />
+      <label>Password</label>
+      <input type="password" name="password" autocomplete="current-password" required />
+      <button type="submit">Sign in</button>
+    </form>
+    <p><a href="/admin">Back to dashboard</a></p>
+  </main>
+</body>
+</html>
