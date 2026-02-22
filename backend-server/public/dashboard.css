@@ -260,7 +260,22 @@ button:disabled {
 	font-size: 12px;
 }
 
+.scroll-box {
+	max-height: 360px;
+	overflow-y: auto;
+}
+
 .table-wrap { overflow: auto; }
+
+.feed-scroll {
+	max-height: 420px;
+	overflow-y: auto;
+}
+
+.auth-scroll {
+	max-height: 280px;
+	overflow-y: auto;
+}
 
 .feed-table {
 	width: 100%;
@@ -313,6 +328,14 @@ button:disabled {
 .feed-table td:last-child { white-space: nowrap; }
 
 .feed-table td:nth-child(8) {
+	font-family: Consolas, Monaco, monospace;
+	font-size: 11px;
+	max-width: 180px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.auth-table td:nth-child(6) {
 	font-family: Consolas, Monaco, monospace;
 	font-size: 11px;
 	max-width: 180px;

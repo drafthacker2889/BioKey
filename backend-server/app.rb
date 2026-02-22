@@ -967,6 +967,19 @@ get '/admin/api/feed' do
   end
 end
 
+get '/admin/api/auth-feed' do
+  content_type :json
+  require_dashboard_read!
+
+  limit = params['limit']&.to_i || 50
+  limit = 200 if limit > 200
+  limit = 1 if limit < 1
+
+  with_dashboard_service do |service|
+    json_success({ events: service.latest_auth_events(limit: limit) })
+  end
+end
+
 post '/admin/api/attempt/:id/label' do
   content_type :json
   require_dashboard_control!

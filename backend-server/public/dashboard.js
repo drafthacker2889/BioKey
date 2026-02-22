@@ -3,6 +3,7 @@ const overviewBox = document.getElementById('overviewBox');
 const userBox = document.getElementById('userBox');
 const controlBox = document.getElementById('controlBox');
 const feedBody = document.getElementById('feedBody');
+const authFeedBody = document.getElementById('authFeedBody');
 const statusLine = document.getElementById('statusLine');
 const overviewGrid = document.getElementById('overviewGrid');
 const outcomesList = document.getElementById('outcomesList');
@@ -11,6 +12,9 @@ const systemPill = document.getElementById('systemPill');
 const adminPill = document.getElementById('adminPill');
 
 let state = { canControl: false, isAdmin: false };
+const REFRESH_INTERVAL_MS = 6000;
+let refreshInFlight = false;
+let nextRefreshAt = Date.now() + REFRESH_INTERVAL_MS;
 
 async function apiGet(path) {
   const res = await fetch(path, { credentials: 'same-origin' });
@@ -56,6 +60,11 @@ function updateControlState() {
   controlBox.textContent = enabled ? 'Control mode enabled.' : 'Control mode is disabled.';
 }
 
+function setLiveMeta(text) {
+  if (!liveMeta) return;
+  liveMeta.textContent = text;
+}
+
 function formatValue(value) {
   if (value === null || value === undefined || value === '') return '--';
   if (typeof value === 'number') return Number.isInteger(value) ? value.toString() : value.toFixed(4);
@@ -82,6 +91,14 @@ function rowClassForOutcome(outcome) {
   if (normalized === 'SUCCESS') return 'success';
   if (normalized === 'CHALLENGE') return 'challenge';
   if (normalized === 'DENIED') return 'denied';
+  return '';
+}
+
+function badgeClassForVerdict(verdict) {
+  const normalized = String(verdict || '').toUpperCase();
+  if (normalized === 'AUTH_FAIL') return 'denied';
+  if (normalized === 'AUTH_LOCK' || normalized === 'AUTH_RATE') return 'challenge';
+  if (normalized === 'AUTH_OK') return 'success';
   return '';
 }
 
@@ -148,6 +165,28 @@ function renderFeed(attempts) {
   });
 }
 
+function renderAuthFeed(events) {
+  if (!authFeedBody) return;
+
+  authFeedBody.innerHTML = '';
+  events.forEach((item) => {
+    const tr = document.createElement('tr');
+    const verdict = item.verdict || '--';
+    const verdictClass = badgeClassForVerdict(verdict);
+
+    tr.innerHTML = `
+      <td>${formatTime(item.attempted_at)}</td>
+      <td>${item.user_id || '--'}</td>
+      <td><span class="badge ${verdictClass}">${verdict}</span></td>
+      <td>${formatValue(item.score)}</td>
+      <td>${item.ip_address || '--'}</td>
+      <td>${item.request_id || '--'}</td>
+    `;
+
+    authFeedBody.appendChild(tr);
+  });
+}
+
 async function runLabelAction(attemptId, action) {
   if (!modeToggle.checked || !state.canControl) {
     controlBox.textContent = 'Enable control mode and login as admin first.';
@@ -172,6 +211,7 @@ async function loadOverview() {
     systemPill.className = 'pill bad';
     if (overviewGrid) overviewGrid.innerHTML = '';
     if (outcomesList) outcomesList.innerHTML = '<span class="chip bad">Data unavailable</span>';
+    setLiveMeta(`Refresh failed at ${new Date().toLocaleTimeString()}`);
     return;
   }
 
@@ -183,9 +223,7 @@ async function loadOverview() {
   systemPill.className = `pill ${payload.db_connected ? 'good' : 'bad'}`;
   adminPill.textContent = state.isAdmin ? 'Admin: Authenticated' : 'Admin: Read-only';
   adminPill.className = `pill ${state.isAdmin ? 'good' : ''}`;
-  if (liveMeta) {
-    liveMeta.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
-  }
+  setLiveMeta(`Last refresh: ${new Date().toLocaleTimeString()}`);
   renderOverview(payload);
   overviewBox.textContent = JSON.stringify(payload, null, 2);
   updateControlState();
@@ -195,9 +233,51 @@ async function loadFeed() {
   const response = await apiGet('/admin/api/feed?limit=40');
   if (!response.ok) {
     controlBox.textContent = summarizeErrorPayload(response.data, 'Unable to load feed right now.');
+    setLiveMeta(`Feed refresh failed at ${new Date().toLocaleTimeString()}`);
     return;
   }
   renderFeed(response.data.attempts || []);
+}
+
+async function loadAuthFeed() {
+  const response = await apiGet('/admin/api/auth-feed?limit=40');
+  if (!response.ok) {
+    setLiveMeta(`Auth feed refresh failed at ${new Date().toLocaleTimeString()}`);
+    return;
+  }
+
+  renderAuthFeed(response.data.events || []);
+}
+
+async function refreshDashboardCycle() {
+  if (refreshInFlight) return;
+
+  refreshInFlight = true;
+  setLiveMeta('Refreshing...');
+  try {
+    await loadOverview();
+    await loadFeed();
+    await loadAuthFeed();
+  } finally {
+    refreshInFlight = false;
+    nextRefreshAt = Date.now() + REFRESH_INTERVAL_MS;
+  }
+}
+
+function startRefreshLoop() {
+  setInterval(() => {
+    if (!refreshInFlight) {
+      const remainingMs = Math.max(0, nextRefreshAt - Date.now());
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      if (remainingSec > 0) {
+        setLiveMeta(`Next refresh in ${remainingSec}s`);
+      }
+    }
+
+    if (Date.now() >= nextRefreshAt) {
+      refreshDashboardCycle();
+    }
+  }, 1000);
 }
 
 async function loadUser() {
@@ -253,9 +333,5 @@ document.querySelectorAll('[data-action]').forEach((btn) => {
   btn.addEventListener('click', () => runControl(btn.getAttribute('data-action')));
 });
 
-loadOverview();
-loadFeed();
-setInterval(async () => {
-  await loadOverview();
-  await loadFeed();
-}, 6000);
+refreshDashboardCycle();
+startRefreshLoop();

@@ -44,6 +44,27 @@ class DashboardService
     end
   end
 
+  def latest_auth_events(limit: 50)
+    rows = @db.exec_params(
+      "SELECT attempted_at, user_id, verdict, score, ip_address, request_id
+       FROM access_logs
+       ORDER BY attempted_at DESC
+       LIMIT $1",
+      [limit]
+    )
+
+    rows.map do |row|
+      {
+        attempted_at: row['attempted_at'],
+        user_id: row['user_id']&.to_i,
+        verdict: row['verdict'],
+        score: row['score']&.to_f,
+        ip_address: row['ip_address'],
+        request_id: row['request_id']
+      }
+    end
+  end
+
   def user_detail(user_id)
     thresholds_row = @db.exec_params(
       'SELECT success_threshold, challenge_threshold, updated_at FROM user_score_thresholds WHERE user_id = $1 LIMIT 1',
