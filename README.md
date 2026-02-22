@@ -1,6 +1,6 @@
 # BioKey Project
 
-BioKey is a multi-component biometric authentication prototype based on **keystroke dynamics**.
+BioKey is a multi-component biometric authentication platform based on **keystroke dynamics**.
 
 It includes:
 - **Android client** (Jetpack Compose) for sending training/login timing samples
@@ -284,14 +284,13 @@ Hello World
 
 ---
 
-## Security Disclaimer
+## Security Hardening Checklist
 
-This is a prototype implementation for development/testing. Before production use, add:
-- proper password hashing and auth flow
-- HTTPS/TLS
-- input validation hardening
-- user management and role model
-- robust biometric anti-spoofing controls
+Current implementation includes strengthened auth and validation, and should still be hardened further for internet-facing deployment:
+- enforce HTTPS/TLS end-to-end
+- add account lockout/rate limiting and abuse monitoring
+- expand user lifecycle management and role-based authorization
+- add robust biometric anti-spoofing and liveness defenses
 
 ---
 
@@ -319,4 +318,5 @@ This is a prototype implementation for development/testing. Before production us
 - ✅ Phase 3: MVVM refactor (`ui`, `viewmodel`, `model`, `data` split)
 - ✅ Phase 4: Networking hardening (`OkHttp`, centralized API error mapping, unauthorized session handling)
 - ✅ Phase 5: Retrofit API service layer + `/auth/refresh` endpoint + stricter auth/timing validation
-- 🔜 Next recommended phase: secure password hashing migration (`bcrypt/argon2`) + refresh-token revocation policy + instrumentation tests
+- ✅ Phase 6: `bcrypt` password hashing (with legacy hash migration) + single-session revocation policy
+- 🔜 Next recommended phase: transport security (`HTTPS`), rate limiting, and biometric anti-spoofing controls

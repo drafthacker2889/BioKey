@@ -11,6 +11,7 @@ gem 'ffi'
 
 # The PostgreSQL driver to talk to our SQL database
 gem 'pg'
+gem 'bcrypt'
 
 # Optional: For better development logging
 gem 'rack-test', group: :test

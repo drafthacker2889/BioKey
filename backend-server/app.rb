@@ -5,6 +5,7 @@ require 'yaml'
 require 'logger'
 require 'digest'
 require 'securerandom'
+require 'bcrypt'
 require_relative 'lib/auth_service'
 
 set :bind, '0.0.0.0'
@@ -75,7 +76,7 @@ def ensure_user_exists(user_id)
 
   DB.exec_params(
     "INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)",
-    [user_id, "user_#{user_id}", "demo_password_hash"]
+    [user_id, "user_#{user_id}", hash_password(SecureRandom.hex(24))]
   )
 end
 
@@ -200,8 +201,42 @@ rescue PG::Error => e
 end
 
 def hash_password(password)
+  pepper = ENV['APP_AUTH_PEPPER'] || 'biokey_dev_pepper'
+  BCrypt::Password.create("#{pepper}:#{password}").to_s
+end
+
+def legacy_hash_password(password)
   salt = ENV['APP_AUTH_SALT'] || 'biokey_dev_salt'
   Digest::SHA256.hexdigest("#{salt}:#{password}")
+end
+
+def bcrypt_hash?(value)
+  value.is_a?(String) && value.start_with?('$2a$', '$2b$', '$2y$')
+end
+
+def password_matches?(password, stored_hash)
+  return false if stored_hash.nil? || stored_hash.empty?
+
+  if bcrypt_hash?(stored_hash)
+    pepper = ENV['APP_AUTH_PEPPER'] || 'biokey_dev_pepper'
+    BCrypt::Password.new(stored_hash) == "#{pepper}:#{password}"
+  else
+    legacy_hash_password(password) == stored_hash
+  end
+rescue BCrypt::Errors::InvalidHash
+  false
+end
+
+def cleanup_expired_sessions
+  DB.exec("DELETE FROM user_sessions WHERE expires_at <= NOW()")
+end
+
+def revoke_user_sessions(user_id, except_token = nil)
+  if except_token.nil?
+    DB.exec_params('DELETE FROM user_sessions WHERE user_id = $1', [user_id])
+  else
+    DB.exec_params('DELETE FROM user_sessions WHERE user_id = $1 AND session_token <> $2', [user_id, except_token])
+  end
 end
 
 def generate_session_token
@@ -282,11 +317,23 @@ post '/auth/login' do
       [username]
     )
 
-    if result.ntuples == 0 || result[0]['password_hash'] != hash_password(password)
+    if result.ntuples == 0 || !password_matches?(password, result[0]['password_hash'])
       return json_error('Invalid credentials', 401)
     end
 
     user_id = result[0]['id'].to_i
+    stored_hash = result[0]['password_hash']
+
+    if !bcrypt_hash?(stored_hash)
+      DB.exec_params(
+        'UPDATE users SET password_hash = $1 WHERE id = $2',
+        [hash_password(password), user_id]
+      )
+    end
+
+    cleanup_expired_sessions
+    revoke_user_sessions(user_id)
+
     token = generate_session_token
     expires_at = (Time.now + 24 * 60 * 60).utc
 
@@ -367,6 +414,9 @@ post '/auth/refresh' do
 
     session = active_session_for(token)
     return json_error('Unauthorized', 401) if session.nil?
+
+    cleanup_expired_sessions
+    revoke_user_sessions(session['user_id'].to_i, token)
 
     new_token = generate_session_token
     new_expires_at = (Time.now + 24 * 60 * 60).utc
