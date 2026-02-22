@@ -122,6 +122,12 @@ bundle install
 ruby app.rb
 ```
 
+### Backend Tests
+```bash
+cd backend-server
+ruby -Itest test/auth_service_test.rb
+```
+
 Backend is configured to listen on:
 - Host: `0.0.0.0`
 - Port: `4567`
@@ -147,6 +153,12 @@ cd android-client
 ./gradlew :app:assembleDebug
 ```
 (Windows: `gradlew.bat`)
+
+### Android Unit Tests
+```bash
+cd android-client
+./gradlew testDebugUnitTest
+```
 
 ### Compose/Kotlin Compatibility
 Project is pinned to a stable, tested Android toolchain:
@@ -335,6 +347,17 @@ This is explicitly a prototype. For real-world use, still harden and verify:
 - ✅ Phase 7: auth abuse controls (per-IP rate limiting, login lockout policy, enriched audit events)
 - ✅ Phase 8: variance-aware biometric scoring (normalization, weighting, outlier resistance, coverage gating, per-user threshold calibration)
 - ✅ Phase 9: API/version contract hardening, request correlation headers, migration runner scaffold, and DB index reinforcement
+- ✅ Phase 10: backend+android automated tests, CI workflow gates on push/PR, and documented validation commands
+
+---
+
+## CI (GitHub Actions)
+
+Workflow file: `.github/workflows/ci.yml`
+
+Runs on push/PR to `main`:
+- backend tests (`ruby -Itest test/auth_service_test.rb`)
+- Android unit tests (`./gradlew testDebugUnitTest --no-daemon`)
 
 ---
 

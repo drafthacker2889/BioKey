@@ -43,7 +43,7 @@ data class BioKeyUiState(
 
 fun parseBackendStatus(body: String): String? {
     return try {
-        JSONObject(body).optString("status", null)
+        JSONObject(body).optString("status").takeIf { it.isNotBlank() }
     } catch (_: Exception) {
         null
     }
@@ -52,9 +52,10 @@ fun parseBackendStatus(body: String): String? {
 fun parseAuthSession(body: String): AuthSession? {
     return try {
         val json = JSONObject(body)
-        val token = json.optString("token", "")
-        val userId = json.optInt("user_id", -1)
-        val username = json.optString("username", "")
+        val source = if (json.has("token")) json else json.optJSONObject("data") ?: json
+        val token = source.optString("token", "")
+        val userId = source.optInt("user_id", -1)
+        val username = source.optString("username", "")
         if (token.isBlank() || userId <= 0 || username.isBlank()) {
             null
         } else {

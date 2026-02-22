@@ -28,7 +28,13 @@ object ApiErrorMapper {
     private fun parseBackendMessage(body: String): String? {
         return try {
             val json = JSONObject(body)
-            json.optString("message").takeIf { it.isNotBlank() }
+            val topLevelMessage = json.optString("message").takeIf { it.isNotBlank() }
+            if (!topLevelMessage.isNullOrBlank()) {
+                return topLevelMessage
+            }
+
+            val errorObject = json.optJSONObject("error")
+            errorObject?.optString("message")?.takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             null
         }
