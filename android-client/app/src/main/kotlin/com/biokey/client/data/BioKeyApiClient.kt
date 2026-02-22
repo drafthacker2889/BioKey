@@ -28,8 +28,8 @@ object BioKeyApiClient {
     private val serviceCache = ConcurrentHashMap<String, BioKeyRetrofitService>()
 
     private fun normalizeBaseUrl(baseUrl: String): String {
-        val trimmed = baseUrl.trim()
-        return if (trimmed.endsWith('/')) trimmed else "$trimmed/"
+        val trimmed = baseUrl.trim().trimEnd('/')
+        return if (trimmed.endsWith("/v1")) "$trimmed/" else "$trimmed/v1/"
     }
 
     private fun serviceFor(baseUrl: String): BioKeyRetrofitService {

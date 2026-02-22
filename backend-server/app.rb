@@ -7,10 +7,30 @@ require 'digest'
 require 'securerandom'
 require 'bcrypt'
 require 'thread'
+require 'time'
 require_relative 'lib/auth_service'
+
+class ApiVersionMiddleware
+  def initialize(app)
+    @app = app
+  end
+
+  def call(env)
+    path = env['PATH_INFO'].to_s
+    if path.start_with?('/v1/')
+      env['PATH_INFO'] = path.sub('/v1', '')
+      env['BIOKEY_API_VERSION'] = 'v1'
+    else
+      env['BIOKEY_API_VERSION'] = 'legacy'
+    end
+
+    @app.call(env)
+  end
+end
 
 set :bind, '0.0.0.0'
 set :port, 4567
+use ApiVersionMiddleware
 
 # Configure logging
 $logger = Logger.new(STDOUT)
@@ -23,6 +43,33 @@ AUTH_LOCKOUT_WINDOW_MINUTES = 15
 
 RATE_LIMIT_MUTEX = Mutex.new
 RATE_LIMIT_BUCKETS = {}
+
+before do
+  request_id = request.env['HTTP_X_REQUEST_ID']
+  request_id = SecureRandom.hex(12) if request_id.nil? || request_id.strip.empty?
+
+  request.env['BIOKEY_REQUEST_ID'] = request_id
+  request.env['BIOKEY_API_VERSION'] ||= 'legacy'
+
+  headers 'X-Request-Id' => request_id
+  headers 'X-Api-Version' => request.env['BIOKEY_API_VERSION']
+  headers 'X-Api-Deprecation' => 'Legacy paths are supported; prefer /v1/*' if request.env['BIOKEY_API_VERSION'] == 'legacy'
+  headers 'X-Content-Type-Options' => 'nosniff'
+  headers 'X-Frame-Options' => 'DENY'
+  headers 'Referrer-Policy' => 'no-referrer'
+
+  if request.secure? || request.env['HTTP_X_FORWARDED_PROTO'] == 'https'
+    headers 'Strict-Transport-Security' => 'max-age=31536000; includeSubDomains'
+  end
+
+  if ENV['APP_REQUIRE_HTTPS'] == 'true'
+    secure = request.secure? || request.env['HTTP_X_FORWARDED_PROTO'] == 'https'
+    unless secure
+      content_type :json
+      halt 426, json_error('HTTPS required for this environment', 426, 'HTTPS_REQUIRED')
+    end
+  end
+end
 
 # Load Database Configuration
 begin
@@ -50,10 +97,41 @@ rescue PG::Error => e
   exit(1)
 end
 
-# Helper for JSON Error responses
-def json_error(message, status_code = 500)
+def current_request_id
+  request.env['BIOKEY_REQUEST_ID']
+rescue
+  'n/a'
+end
+
+def current_api_version
+  request.env['BIOKEY_API_VERSION'] || 'legacy'
+rescue
+  'legacy'
+end
+
+def json_success(payload = {}, status_code = 200)
   status status_code
-  { status: "ERROR", message: message }.to_json
+  body = payload.is_a?(Hash) ? payload : { data: payload }
+  body[:request_id] = current_request_id
+  body[:api_version] = current_api_version
+  body[:timestamp] = Time.now.utc.iso8601
+  body.to_json
+end
+
+def json_error(message, status_code = 500, code = 'ERROR', details = nil)
+  status status_code
+  error_body = {
+    status: 'ERROR',
+    error: {
+      code: code,
+      message: message
+    },
+    request_id: current_request_id,
+    api_version: current_api_version,
+    timestamp: Time.now.utc.iso8601
+  }
+  error_body[:error][:details] = details unless details.nil?
+  error_body.to_json
 end
 
 def valid_username?(username)
@@ -214,7 +292,7 @@ post '/train' do
       upsert_biometric_pair(user_id, sample[:pair], sample[:dwell], sample[:flight])
     end
     $logger.info "Updated profile for User ID #{user_id}"
-    { status: "Profile Updated" }.to_json
+    json_success({ status: 'SUCCESS', message: 'Profile Updated' })
 
   rescue JSON::ParserError
     json_error("Invalid JSON format", 400)
@@ -245,6 +323,13 @@ post '/login' do
 
     result = AuthService.verify_login(user_id, timings)
 
+    if result[:status] == 'ERROR'
+      details = result.dup
+      details.delete(:status)
+      message = details.delete(:message) || 'Biometric verification failed'
+      return json_error(message, 422, 'BIOMETRIC_VALIDATION_FAILED', details)
+    end
+
     verdict_code = case result[:status]
              when 'SUCCESS' then 'BIO_OK'
              when 'CHALLENGE' then 'BIO_CHAL'
@@ -255,8 +340,8 @@ post '/login' do
     
     # Log the result status
     $logger.info "Login attempt for User #{user_id}: #{result[:status]} (Score: #{result[:score]})"
-    
-    result.to_json
+
+    json_success(result)
 
   rescue JSON::ParserError
     json_error("Invalid JSON format", 400)
@@ -317,6 +402,9 @@ begin
 
   DB.exec("CREATE INDEX IF NOT EXISTS idx_auth_attempts_username_ip_time ON auth_login_attempts(username, ip_address, attempted_at)")
   DB.exec("CREATE INDEX IF NOT EXISTS idx_score_history_user_time ON user_score_history(user_id, created_at)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_user_expiry ON user_sessions(user_id, expires_at)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at)")
+  DB.exec("CREATE INDEX IF NOT EXISTS idx_biometric_profiles_user_pair ON biometric_profiles(user_id, key_pair)")
 rescue PG::Error => e
   $logger.error "Unable to create auth/session support tables: #{e.message}"
   exit(1)
@@ -419,7 +507,7 @@ post '/auth/register' do
     user_id = created_user.ntuples > 0 ? created_user[0]['id'].to_i : nil
     log_access_event(user_id: user_id, verdict: 'REG_OK', score: nil)
 
-    { status: 'SUCCESS', message: 'Account created' }.to_json
+    json_success({ status: 'SUCCESS', message: 'Account created' })
   rescue PG::UniqueViolation
     log_access_event(user_id: nil, verdict: 'REG_FAIL', score: nil)
     json_error('Username already exists', 409)
@@ -497,13 +585,13 @@ post '/auth/login' do
 
     log_access_event(user_id: user_id, verdict: 'AUTH_OK', score: nil)
 
-    {
+    json_success({
       status: 'SUCCESS',
       token: token,
       user_id: user_id,
       username: username,
       expires_at: expires_at
-    }.to_json
+    })
   rescue JSON::ParserError
     log_access_event(user_id: nil, verdict: 'AUTH_FAIL', score: nil)
     json_error('Invalid JSON format', 400)
@@ -530,12 +618,12 @@ get '/auth/profile' do
       [user_id]
     )[0]['c'].to_i
 
-    {
+    json_success({
       status: 'SUCCESS',
       user_id: user_id,
       username: session['username'],
       biometric_pairs: profile_count
-    }.to_json
+    })
   rescue PG::Error => e
     $logger.error "Database error in /auth/profile: #{e.message}"
     json_error('Database error')
@@ -557,7 +645,7 @@ post '/auth/logout' do
     session = active_session_for(token)
     DB.exec_params('DELETE FROM user_sessions WHERE session_token = $1', [token])
     log_access_event(user_id: session.nil? ? nil : session['user_id'].to_i, verdict: 'LOGOUT', score: nil)
-    { status: 'SUCCESS', message: 'Logged out' }.to_json
+    json_success({ status: 'SUCCESS', message: 'Logged out' })
   rescue PG::Error => e
     $logger.error "Database error in /auth/logout: #{e.message}"
     log_access_event(user_id: nil, verdict: 'LOG_FAIL', score: nil)
@@ -602,13 +690,13 @@ post '/auth/refresh' do
 
     log_access_event(user_id: session['user_id'].to_i, verdict: 'REF_OK', score: nil)
 
-    {
+    json_success({
       status: 'SUCCESS',
       token: new_token,
       user_id: session['user_id'].to_i,
       username: session['username'],
       expires_at: new_expires_at
-    }.to_json
+    })
   rescue PG::Error => e
     $logger.error "Database error in /auth/refresh: #{e.message}"
     json_error('Database error')

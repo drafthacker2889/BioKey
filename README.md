@@ -90,6 +90,12 @@ development:
 
 Then create DB and run schema from `database/schema.sql`.
 
+Optional (recommended for current backend):
+```bash
+cd backend-server
+ruby db/migrate.rb
+```
+
 ## Option B: Docker Compose
 `database/docker-compose.yml` is configured for:
 - DB: `biokey_db`
@@ -203,22 +209,22 @@ If phone cannot connect:
 
 ## API Reference
 
-## `POST /auth/register`
+## `POST /v1/auth/register`
 Creates a username/password account.
 
-## `POST /auth/login`
+## `POST /v1/auth/login`
 Returns session token + user details.
 
-## `GET /auth/profile`
+## `GET /v1/auth/profile`
 Returns authenticated profile summary (`Authorization: Bearer <token>`).
 
-## `POST /auth/refresh`
+## `POST /v1/auth/refresh`
 Rotates session token and extends expiry (`Authorization: Bearer <token>`).
 
-## `POST /auth/logout`
+## `POST /v1/auth/logout`
 Invalidates the current session token.
 
-## `POST /train`
+## `POST /v1/train`
 Stores/updates biometric profile.
 
 ### Request
@@ -235,11 +241,15 @@ Stores/updates biometric profile.
 ### Success Response
 ```json
 {
-  "status": "Profile Updated"
+  "status": "SUCCESS",
+  "message": "Profile Updated",
+  "request_id": "<id>",
+  "api_version": "v1",
+  "timestamp": "2026-02-22T10:00:00Z"
 }
 ```
 
-## `POST /login`
+## `POST /v1/login`
 Verifies attempt against stored profile.
 
 ### Request
@@ -249,7 +259,10 @@ Same shape as `/train`.
 ```json
 {
   "status": "SUCCESS",
-  "score": 7.82
+  "score": 7.82,
+  "request_id": "<id>",
+  "api_version": "v1",
+  "timestamp": "2026-02-22T10:00:00Z"
 }
 ```
 (or `CHALLENGE` / `DENIED`)
@@ -321,7 +334,7 @@ This is explicitly a prototype. For real-world use, still harden and verify:
 - ✅ Phase 6: `bcrypt` password hashing (with legacy hash migration) + single-session revocation policy
 - ✅ Phase 7: auth abuse controls (per-IP rate limiting, login lockout policy, enriched audit events)
 - ✅ Phase 8: variance-aware biometric scoring (normalization, weighting, outlier resistance, coverage gating, per-user threshold calibration)
-- 🔜 Next recommended phase: Phase 9 (security/data/API reliability hardening)
+- ✅ Phase 9: API/version contract hardening, request correlation headers, migration runner scaffold, and DB index reinforcement
 
 ---
 
