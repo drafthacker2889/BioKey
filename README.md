@@ -38,13 +38,24 @@ Android client architecture is now **MVVM**:
    - `CHALLENGE` (suspicious)
    - `DENIED` (imposter)
 
-### Timing Object Format
+### Timing Payload Formats
+`timings` now supports both formats below.
+
+#### A) Object format (key-pair aware)
 Each timing item:
 ```json
 {
   "pair": "ab",
   "dwell": 103.0,
   "flight": 56.0
+}
+```
+
+#### B) Numeric format (auto-normalized on backend)
+```json
+{
+  "user_id": 1,
+  "timings": [120, 130, 125, 140]
 }
 ```
 
@@ -241,6 +252,8 @@ Hello World
 
 - Native label `"Hello from C++"` in the app is a **status string from JNI**, not an error.
 - `/train` foreign-key failure was fixed by ensuring `users` row exists for incoming `user_id`.
+- `/train` and `/login` now accept both object timings and numeric timing arrays (backend normalizes either format).
+- End-to-end API flow was validated on local backend: `register -> auth/login -> auth/profile -> train -> biometric login -> auth/logout`.
 - SQL seeds file (`database/seeds.sql`) is currently empty.
 - Android source is committed; generated artifacts (`.idea`, `.cxx`, build outputs) are ignored.
 
