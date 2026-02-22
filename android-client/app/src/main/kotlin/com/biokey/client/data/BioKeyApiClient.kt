@@ -104,7 +104,7 @@ object BioKeyApiClient {
                 return ApiResult(statusCode = response.code, body = body)
             }
         } catch (exception: Exception) {
-            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
+            return ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
         }
     }
 }
