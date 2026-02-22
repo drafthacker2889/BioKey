@@ -37,6 +37,34 @@ ruby app.rb
 
 4. Run Android app from `android-client/`.
 
+### One-command local startup (Windows)
+
+From repo root:
+
+```powershell
+.\run_local.ps1
+```
+
+This starts backend setup/migrations and opens `http://127.0.0.1:4567/admin` automatically.
+
+Cmd/batch wrapper:
+
+```bat
+run_local.bat
+```
+
+Optional: also start Docker PostgreSQL first:
+
+```powershell
+.\run_local.ps1 -StartDockerDb -PostgresPassword change_me
+```
+
+Optional: skip auto-opening the dashboard browser tab:
+
+```powershell
+.\run_local.ps1 -OpenDashboard:$false
+```
+
 Health check:
 
 ```text
