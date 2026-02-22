@@ -5,6 +5,31 @@ class AuthService
   PERFECT_MATCH = 10.0   
   SUSPICIOUS    = 20.0   
 
+  def self.normalize_attempt_timing(timing, index)
+    if timing.is_a?(Hash)
+      pair = timing['pair'] || "k#{index}"
+      dwell = timing['dwell'] || timing['value'] || timing['time']
+      flight = timing['flight'] || timing['dwell'] || timing['value'] || timing['time']
+      return nil if dwell.nil? || flight.nil?
+
+      return {
+        'pair' => pair.to_s,
+        'dwell' => dwell.to_f,
+        'flight' => flight.to_f
+      }
+    end
+
+    if timing.is_a?(Numeric)
+      return {
+        'pair' => "k#{index}",
+        'dwell' => timing.to_f,
+        'flight' => timing.to_f
+      }
+    end
+
+    nil
+  end
+
   def self.verify_login(user_id, attempt_data)
     # 1. Fetch the existing master profile
     # Included all columns from both versions (avg_dwell_time, avg_flight_time, sample_count, std_dev_flight)
@@ -44,7 +69,9 @@ class AuthService
     # Let's sort the attempt data by key_pair to match the DB sort (if we did that).
     # Better: iterate through the attempt data, look up the profile, if found, add both to flat arrays.
     
-    attempt_data.each do |timing|
+    normalized_attempts = attempt_data.each_with_index.map { |timing, index| normalize_attempt_timing(timing, index) }.compact
+
+    normalized_attempts.each do |timing|
       key = timing['pair']
       if profile_map.key?(key)
         row = profile_map[key]
@@ -73,7 +100,7 @@ class AuthService
       
       # 5. Adaptive learning: Update the profile with new data
       # Now we pass the FULL attempt data and the FULL profile map to update correctly
-      update_profile(user_id, attempt_data, profile_map) 
+      update_profile(user_id, normalized_attempts, profile_map) 
       
       return { status: "SUCCESS", score: distance_score }
     elsif distance_score < SUSPICIOUS

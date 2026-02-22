@@ -56,21 +56,50 @@ def ensure_user_exists(user_id)
   )
 end
 
+def normalize_timing_sample(sample, index)
+  if sample.is_a?(Hash)
+    pair = sample['pair'] || "k#{index}"
+    dwell = sample['dwell'] || sample['value'] || sample['time']
+    flight = sample['flight'] || sample['dwell'] || sample['value'] || sample['time']
+
+    return nil if dwell.nil? || flight.nil?
+
+    return {
+      pair: pair.to_s,
+      dwell: dwell.to_f,
+      flight: flight.to_f
+    }
+  end
+
+  if sample.is_a?(Numeric)
+    return {
+      pair: "k#{index}",
+      dwell: sample.to_f,
+      flight: sample.to_f
+    }
+  end
+
+  nil
+end
+
 # Route 1: The Enrollment (Training)
 post '/train' do
   content_type :json
   begin
     data = JSON.parse(request.body.read)
-    user_id = data['user_id']
+    user_id = data['user_id']&.to_i
     timings = data['timings']
 
-    if user_id.nil? || timings.nil? || !timings.is_a?(Array)
+    if user_id.nil? || user_id <= 0 || timings.nil? || !timings.is_a?(Array) || timings.empty?
        return json_error("Invalid input data", 400)
     end
 
-     ensure_user_exists(user_id)
+    ensure_user_exists(user_id)
 
-    timings.each do |t|
+    timings.each_with_index do |t, index|
+      sample = normalize_timing_sample(t, index)
+      next if sample.nil?
+
       # Use ON CONFLICT to update the existing rhythm and increment the count
       # Note: Requires a UNIQUE constraint on (user_id, key_pair) in your schema
       DB.exec_params(
@@ -81,7 +110,7 @@ post '/train' do
            avg_dwell_time = (biometric_profiles.avg_dwell_time + EXCLUDED.avg_dwell_time) / 2,
            avg_flight_time = (biometric_profiles.avg_flight_time + EXCLUDED.avg_flight_time) / 2,
            sample_count = biometric_profiles.sample_count + 1", 
-        [user_id, t['pair'], t['dwell'], t['flight']]
+        [user_id, sample[:pair], sample[:dwell], sample[:flight]]
       )
     end
     $logger.info "Updated profile for User ID #{user_id}"
