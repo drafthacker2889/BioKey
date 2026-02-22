@@ -3,6 +3,8 @@ require 'json'
 require 'pg'
 require 'yaml'
 require 'logger'
+require 'digest'
+require 'securerandom'
 require_relative 'lib/auth_service'
 
 set :bind, '0.0.0.0'
@@ -127,5 +129,176 @@ post '/login' do
   rescue => e
     $logger.error "Unknown error in /login: #{e.message}"
     json_error("Internal Server Error")
+  end
+end
+
+begin
+  DB.exec(
+    "CREATE TABLE IF NOT EXISTS user_sessions (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      session_token VARCHAR(128) UNIQUE NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )"
+  )
+rescue PG::Error => e
+  $logger.error "Unable to create user_sessions table: #{e.message}"
+  exit(1)
+end
+
+def hash_password(password)
+  salt = ENV['APP_AUTH_SALT'] || 'biokey_dev_salt'
+  Digest::SHA256.hexdigest("#{salt}:#{password}")
+end
+
+def generate_session_token
+  SecureRandom.hex(32)
+end
+
+def bearer_token
+  auth_header = request.env['HTTP_AUTHORIZATION']
+  return nil if auth_header.nil? || !auth_header.start_with?('Bearer ')
+
+  auth_header.split(' ', 2).last
+end
+
+def active_session_for(token)
+  return nil if token.nil? || token.empty?
+
+  result = DB.exec_params(
+    "SELECT s.user_id, u.username
+     FROM user_sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.session_token = $1 AND s.expires_at > NOW()
+     LIMIT 1",
+    [token]
+  )
+
+  return nil if result.ntuples == 0
+
+  result[0]
+end
+
+post '/auth/register' do
+  content_type :json
+  begin
+    data = JSON.parse(request.body.read)
+    username = data['username']&.strip
+    password = data['password']
+
+    if username.nil? || username.empty? || password.nil? || password.length < 6
+      return json_error('Username required and password must be at least 6 chars', 400)
+    end
+
+    DB.exec_params(
+      'INSERT INTO users (username, password_hash) VALUES ($1, $2)',
+      [username, hash_password(password)]
+    )
+
+    { status: 'SUCCESS', message: 'Account created' }.to_json
+  rescue PG::UniqueViolation
+    json_error('Username already exists', 409)
+  rescue JSON::ParserError
+    json_error('Invalid JSON format', 400)
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/register: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/register: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
+post '/auth/login' do
+  content_type :json
+  begin
+    data = JSON.parse(request.body.read)
+    username = data['username']&.strip
+    password = data['password']
+
+    if username.nil? || username.empty? || password.nil? || password.empty?
+      return json_error('Missing username or password', 400)
+    end
+
+    result = DB.exec_params(
+      'SELECT id, password_hash FROM users WHERE username = $1 LIMIT 1',
+      [username]
+    )
+
+    if result.ntuples == 0 || result[0]['password_hash'] != hash_password(password)
+      return json_error('Invalid credentials', 401)
+    end
+
+    user_id = result[0]['id'].to_i
+    token = generate_session_token
+    expires_at = (Time.now + 24 * 60 * 60).utc
+
+    DB.exec_params(
+      'INSERT INTO user_sessions (user_id, session_token, expires_at) VALUES ($1, $2, $3)',
+      [user_id, token, expires_at]
+    )
+
+    {
+      status: 'SUCCESS',
+      token: token,
+      user_id: user_id,
+      username: username,
+      expires_at: expires_at
+    }.to_json
+  rescue JSON::ParserError
+    json_error('Invalid JSON format', 400)
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/login: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/login: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
+get '/auth/profile' do
+  content_type :json
+  begin
+    session = active_session_for(bearer_token)
+    return json_error('Unauthorized', 401) if session.nil?
+
+    user_id = session['user_id'].to_i
+    profile_count = DB.exec_params(
+      'SELECT COUNT(*) AS c FROM biometric_profiles WHERE user_id = $1',
+      [user_id]
+    )[0]['c'].to_i
+
+    {
+      status: 'SUCCESS',
+      user_id: user_id,
+      username: session['username'],
+      biometric_pairs: profile_count
+    }.to_json
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/profile: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/profile: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
+post '/auth/logout' do
+  content_type :json
+  begin
+    token = bearer_token
+    if token.nil?
+      return json_error('Missing authorization token', 401)
+    end
+
+    DB.exec_params('DELETE FROM user_sessions WHERE session_token = $1', [token])
+    { status: 'SUCCESS', message: 'Logged out' }.to_json
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/logout: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/logout: #{e.message}"
+    json_error('Internal Server Error')
   end
 end

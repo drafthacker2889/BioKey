@@ -1,6 +1,8 @@
 package com.biokey.client
 
+import android.content.Context
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -28,9 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import android.os.SystemClock
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -72,20 +74,41 @@ enum class AppScreen {
     HOME
 }
 
+data class AuthSession(
+    val token: String,
+    val userId: Int,
+    val username: String
+)
+
 @Composable
 fun BioKeyScreen(nativeStatus: String) {
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences("biokey_prefs", Context.MODE_PRIVATE)
+    }
+
     val defaultBackendUrl = stringResource(id = R.string.backend_url)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    var currentScreen by rememberSaveable { mutableStateOf(AppScreen.LOGIN) }
+    val savedToken = prefs.getString("auth_token", "") ?: ""
+    val savedUsername = prefs.getString("auth_username", "") ?: ""
+    val savedUserId = prefs.getInt("auth_user_id", -1)
+
+    var currentScreen by rememberSaveable {
+        mutableStateOf(if (savedToken.isNotEmpty()) AppScreen.HOME else AppScreen.LOGIN)
+    }
     var serverUrl by rememberSaveable { mutableStateOf(defaultBackendUrl) }
-    var userId by rememberSaveable { mutableStateOf("1") }
+    var userId by rememberSaveable { mutableStateOf(if (savedUserId > 0) savedUserId.toString() else "1") }
+    var username by rememberSaveable { mutableStateOf(savedUsername) }
+    var password by rememberSaveable { mutableStateOf("") }
     var sampleText by rememberSaveable { mutableStateOf("") }
     var sampleKeyPressTimes by remember { mutableStateOf<List<Long>>(emptyList()) }
     var capturedTimings by remember { mutableStateOf<List<Timing>>(emptyList()) }
     var resultText by rememberSaveable { mutableStateOf("Ready") }
-    var homeText by rememberSaveable { mutableStateOf("Welcome") }
+    var homeText by rememberSaveable { mutableStateOf(if (savedUsername.isNotEmpty()) "Welcome, $savedUsername" else "Welcome") }
+    var profileText by rememberSaveable { mutableStateOf("Profile not loaded") }
+    var authToken by rememberSaveable { mutableStateOf(savedToken) }
     var isLoading by remember { mutableStateOf(false) }
 
     fun parseInputOrNull(): Pair<Int, List<Timing>>? {
@@ -110,6 +133,89 @@ fun BioKeyScreen(nativeStatus: String) {
             resultText = "HTTP ${trainResult.statusCode}: ${trainResult.body}"
             snackbarHostState.showSnackbar("Train result: ${trainResult.statusCode}")
             isLoading = false
+        }
+    }
+
+    fun doRegister() {
+        if (username.isBlank() || password.length < 6) {
+            resultText = "Username required. Password must be at least 6 chars"
+            return
+        }
+        scope.launch {
+            isLoading = true
+            val registerResult = ApiClient.postAuthCredential(serverUrl, "/auth/register", username.trim(), password)
+            resultText = "HTTP ${registerResult.statusCode}: ${registerResult.body}"
+            snackbarHostState.showSnackbar("Register result: ${registerResult.statusCode}")
+            isLoading = false
+        }
+    }
+
+    fun refreshProfile() {
+        if (authToken.isBlank()) {
+            profileText = "Not authenticated"
+            return
+        }
+        scope.launch {
+            isLoading = true
+            val profileResult = ApiClient.getAuthProfile(serverUrl, authToken)
+            profileText = if (profileResult.statusCode in 200..299) {
+                parseProfileSummary(profileResult.body)
+            } else {
+                "Profile fetch failed: HTTP ${profileResult.statusCode}"
+            }
+            isLoading = false
+        }
+    }
+
+    fun doAccountLogin() {
+        if (username.isBlank() || password.isBlank()) {
+            resultText = "Enter username and password"
+            return
+        }
+        scope.launch {
+            isLoading = true
+            val authResult = ApiClient.postAuthCredential(serverUrl, "/auth/login", username.trim(), password)
+            if (authResult.statusCode in 200..299) {
+                val session = parseAuthSession(authResult.body)
+                if (session != null) {
+                    authToken = session.token
+                    userId = session.userId.toString()
+                    homeText = "Welcome, ${session.username}"
+                    currentScreen = AppScreen.HOME
+                    prefs.edit()
+                        .putString("auth_token", session.token)
+                        .putString("auth_username", session.username)
+                        .putInt("auth_user_id", session.userId)
+                        .apply()
+                    snackbarHostState.showSnackbar("Account login successful")
+                    refreshProfile()
+                } else {
+                    resultText = "Auth response parse failed"
+                }
+            } else {
+                resultText = "HTTP ${authResult.statusCode}: ${authResult.body}"
+                snackbarHostState.showSnackbar("Account login failed")
+            }
+            isLoading = false
+        }
+    }
+
+    fun doLogout() {
+        scope.launch {
+            if (authToken.isNotBlank()) {
+                ApiClient.postAuthLogout(serverUrl, authToken)
+            }
+            authToken = ""
+            password = ""
+            profileText = "Profile not loaded"
+            currentScreen = AppScreen.LOGIN
+            homeText = "Welcome"
+            prefs.edit()
+                .remove("auth_token")
+                .remove("auth_username")
+                .remove("auth_user_id")
+                .apply()
+            snackbarHostState.showSnackbar("Logged out")
         }
     }
 
@@ -163,6 +269,12 @@ fun BioKeyScreen(nativeStatus: String) {
                         capturedTimings = buildTimingsFromCapturedInput(updatedText, updatedKeyPressTimes)
                     },
                     isLoading = isLoading,
+                    username = username,
+                    password = password,
+                    onUsernameChange = { username = it },
+                    onPasswordChange = { password = it },
+                    onAccountLogin = { doAccountLogin() },
+                    onRegister = { doRegister() },
                     onLogin = { doLogin() },
                     onGoTrain = { currentScreen = AppScreen.TRAIN },
                     resultText = resultText
@@ -188,8 +300,10 @@ fun BioKeyScreen(nativeStatus: String) {
 
                 AppScreen.HOME -> HomeScreen(
                     homeText = homeText,
+                    profileText = profileText,
+                    onRefreshProfile = { refreshProfile() },
                     onTrain = { currentScreen = AppScreen.TRAIN },
-                    onLogout = { currentScreen = AppScreen.LOGIN },
+                    onLogout = { doLogout() },
                     resultText = resultText
                 )
             }
@@ -208,6 +322,12 @@ fun LoginScreen(
     sampleKeyPressTimes: List<Long>,
     onSampleTextChange: (String, List<Long>) -> Unit,
     isLoading: Boolean,
+    username: String,
+    password: String,
+    onUsernameChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onAccountLogin: () -> Unit,
+    onRegister: () -> Unit,
     onLogin: () -> Unit,
     onGoTrain: () -> Unit,
     resultText: String
@@ -218,6 +338,35 @@ fun LoginScreen(
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("Account", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = username,
+                onValueChange = onUsernameChange,
+                label = { Text("Username") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = password,
+                onValueChange = onPasswordChange,
+                label = { Text("Password") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(onClick = onAccountLogin, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+                Text("Account Login")
+            }
+            Button(onClick = onRegister, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+                Text("Register")
+            }
+        }
+    }
 
     InputCard(
         serverUrl = serverUrl,
@@ -230,7 +379,7 @@ fun LoginScreen(
     )
 
     Button(onClick = onLogin, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
-        Text("Login")
+        Text("Biometric Login")
     }
     Button(onClick = onGoTrain, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
         Text("Open Train Screen")
@@ -296,6 +445,8 @@ fun TrainScreen(
 @Composable
 fun HomeScreen(
     homeText: String,
+    profileText: String,
+    onRefreshProfile: () -> Unit,
     onTrain: () -> Unit,
     onLogout: () -> Unit,
     resultText: String
@@ -305,7 +456,12 @@ fun HomeScreen(
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(homeText, style = MaterialTheme.typography.titleMedium)
             Text("Login successful", style = MaterialTheme.typography.bodyMedium)
+            Text(profileText, style = MaterialTheme.typography.bodyMedium)
         }
+    }
+
+    Button(onClick = onRefreshProfile, modifier = Modifier.fillMaxWidth()) {
+        Text("Refresh Profile")
     }
 
     Button(onClick = onTrain, modifier = Modifier.fillMaxWidth()) {
@@ -414,21 +570,31 @@ fun parseBackendStatus(body: String): String? {
     }
 }
 
-fun buildTimings(sampleText: String): List<Timing> {
-    val normalized = sampleText.lowercase().filter { it.isLetterOrDigit() }
-    if (normalized.length < 2) {
-        return emptyList()
+fun parseAuthSession(body: String): AuthSession? {
+    return try {
+        val json = JSONObject(body)
+        val token = json.optString("token", "")
+        val userId = json.optInt("user_id", -1)
+        val username = json.optString("username", "")
+        if (token.isBlank() || userId <= 0 || username.isBlank()) {
+            null
+        } else {
+            AuthSession(token = token, userId = userId, username = username)
+        }
+    } catch (_: Exception) {
+        null
     }
+}
 
-    val timings = mutableListOf<Timing>()
-    for (index in 0 until normalized.length - 1) {
-        val first = normalized[index]
-        val second = normalized[index + 1]
-        val dwell = 80f + ((first.code + (index * 7)) % 90)
-        val flight = 40f + ((second.code + (index * 11)) % 80)
-        timings.add(Timing(pair = "$first$second", dwell = dwell, flight = flight))
+fun parseProfileSummary(body: String): String {
+    return try {
+        val json = JSONObject(body)
+        val username = json.optString("username", "unknown")
+        val pairs = json.optInt("biometric_pairs", 0)
+        "User: $username | Biometric pairs: $pairs"
+    } catch (_: Exception) {
+        body
     }
-    return timings
 }
 
 fun normalizeTextForCapture(value: String): String {
@@ -524,6 +690,97 @@ object ApiClient {
                 BufferedReader(InputStreamReader(it)).use { reader ->
                     reader.readText()
                 }
+            } ?: ""
+
+            ApiResult(statusCode = statusCode, body = responseBody)
+        } catch (exception: Exception) {
+            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    suspend fun postAuthCredential(
+        baseUrl: String,
+        endpoint: String,
+        username: String,
+        password: String
+    ): ApiResult = withContext(Dispatchers.IO) {
+        val trimmed = baseUrl.trimEnd('/')
+        val url = URL("$trimmed$endpoint")
+        val connection = (url.openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+
+            val payload = JSONObject()
+                .put("username", username)
+                .put("password", password)
+
+            connection.outputStream.bufferedWriter().use { writer ->
+                writer.write(payload.toString())
+            }
+
+            val statusCode = connection.responseCode
+            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val responseBody = responseStream?.let {
+                BufferedReader(InputStreamReader(it)).use { reader ->
+                    reader.readText()
+                }
+            } ?: ""
+
+            ApiResult(statusCode = statusCode, body = responseBody)
+        } catch (exception: Exception) {
+            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    suspend fun getAuthProfile(baseUrl: String, token: String): ApiResult = withContext(Dispatchers.IO) {
+        val trimmed = baseUrl.trimEnd('/')
+        val url = URL("$trimmed/auth/profile")
+        val connection = (url.openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer $token")
+
+            val statusCode = connection.responseCode
+            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val responseBody = responseStream?.let {
+                BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() }
+            } ?: ""
+
+            ApiResult(statusCode = statusCode, body = responseBody)
+        } catch (exception: Exception) {
+            ApiResult(statusCode = -1, body = "Request failed: ${exception.message}")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    suspend fun postAuthLogout(baseUrl: String, token: String): ApiResult = withContext(Dispatchers.IO) {
+        val trimmed = baseUrl.trimEnd('/')
+        val url = URL("$trimmed/auth/logout")
+        val connection = (url.openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer $token")
+
+            val statusCode = connection.responseCode
+            val responseStream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val responseBody = responseStream?.let {
+                BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() }
             } ?: ""
 
             ApiResult(statusCode = statusCode, body = responseBody)
