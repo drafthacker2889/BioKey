@@ -1,43 +1,47 @@
 # BioKey Project
 
-BioKey is a keystroke-dynamics biometric authentication prototype.
+BioKey is a keystroke-dynamics biometric authentication prototype with:
+
+- API auth + biometric verification
+- Admin dashboard and evaluation tooling
+- Social-style typing-capture prototype
+- Synthetic human-like data generation
+- Encrypted database backup workflow
 
 ## Repository Layout
 
 - `android-client/` — Android app (Kotlin + Compose)
-- `backend-server/` — Sinatra API + auth + dashboard + evaluation services
+- `backend-server/` — Sinatra API + auth + dashboard + prototype routes
 - `database/` — schema + Docker compose for PostgreSQL
-- `native-engine/` — native biometric math module (legacy/optional path)
-- `tools/` — dataset export + evaluation scripts
+- `native-engine/` — native biometric math module (legacy/optional)
+- `tools/` — generation/export/encryption scripts
 - `docs/` — dashboard and evaluation docs
+- `secure-backups/` — encrypted DB backups (`.enc`) safe to keep in repo
 
 ## Prerequisites
 
 - Ruby 3.x + Bundler
-- PostgreSQL (local) or Docker Desktop
+- PostgreSQL (local install) or Docker Desktop
 - Android Studio + Android SDK + Java 17+
 
 ## Quick Start
 
-1. Start PostgreSQL (local install or Docker).
-2. Apply migrations:
-
-```bash
-cd backend-server
-ruby db/migrate.rb
-```
-
-3. Run backend:
+1. Start PostgreSQL.
+2. Run backend migrations and app:
 
 ```bash
 cd backend-server
 bundle install
+ruby db/migrate.rb
 ruby app.rb
 ```
 
-4. Run Android app from `android-client/`.
+3. Open:
 
-### One-command local startup (Windows)
+- Dashboard: `http://127.0.0.1:4567/admin`
+- Prototype login: `http://127.0.0.1:4567/prototype/login`
+
+### Windows Helper Script
 
 From repo root:
 
@@ -45,24 +49,10 @@ From repo root:
 .\run_local.ps1
 ```
 
-This starts backend setup/migrations and opens `http://127.0.0.1:4567/admin` automatically.
-
-Cmd/batch wrapper:
+Batch wrapper:
 
 ```bat
 run_local.bat
-```
-
-Optional: also start Docker PostgreSQL first:
-
-```powershell
-.\run_local.ps1 -StartDockerDb -PostgresPassword change_me
-```
-
-Optional: skip auto-opening the dashboard browser tab:
-
-```powershell
-.\run_local.ps1 -OpenDashboard:$false
 ```
 
 Health check:
@@ -73,7 +63,9 @@ GET http://127.0.0.1:4567/login
 
 Expected response: `Hello World`
 
-## API (v1)
+## API Overview
+
+### Auth + Biometric (v1)
 
 - `POST /v1/auth/register`
 - `POST /v1/auth/login`
@@ -83,65 +75,91 @@ Expected response: `Hello World`
 - `POST /v1/train`
 - `POST /v1/login`
 
+### Prototype Typing Capture
+
+- `GET /prototype/login`
+- `GET /prototype/feed`
+- `GET /prototype/api/profile` (bearer token required)
+- `POST /prototype/api/typing-events` (bearer token required)
+
+### Admin APIs
+
+- `GET /admin/api/overview`
+- `GET /admin/api/feed`
+- `GET /admin/api/live-feed`
+- `GET /admin/api/auth-feed`
+- `GET /admin/api/typing-capture`
+- `POST /admin/api/attempt/:id/label`
+- `POST /admin/api/attempts/label-bulk`
+- `POST /admin/api/export-dataset`
+- `POST /admin/api/run-evaluation`
+
 Responses include:
 
 - `X-Request-Id`
 - `X-Api-Version`
 
-## Dashboard (Phase 11)
+## Synthetic Data Generation
 
-- Dashboard: `http://localhost:4567/admin`
-- Admin login: `http://localhost:4567/admin/login`
+### Human-like Biometric + Typing Capture
 
-Access model:
+Script: `tools/generate_human_synthetic_40.rb`
 
-- Read-only dashboard access is allowed from localhost.
-- Control actions require admin session or `X-Admin-Token`.
-- Control actions are written to `audit_events`.
+Examples:
 
-Admin env vars:
-
-- `ADMIN_USER` (default `admin`)
-- `ADMIN_PASSWORD_HASH` (bcrypt hash)
-- `ADMIN_TOKEN` (optional)
-- `APP_SESSION_SECRET` (must be strong; at least 64 chars)
-
-### Demo admin credentials (current local setup)
-
-- Username: `admin`
-- Password: `jerryin2323`
-
-PowerShell startup example:
-
-```powershell
+```bash
+# default preset
 cd backend-server
-$hash = ruby -rbcrypt -e "puts BCrypt::Password.create('jerryin2323')"
-$env:ADMIN_USER='admin'
-$env:ADMIN_PASSWORD_HASH=$hash.Trim()
-$env:APP_SESSION_SECRET='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-ruby app.rb
+ruby ../tools/generate_human_synthetic_40.rb
+
+# heavy preset
+ruby ../tools/generate_human_synthetic_40.rb heavy
+
+# custom: mode users train_repetitions logins_per_user typing_batches_per_user typing_chars_per_batch
+ruby ../tools/generate_human_synthetic_40.rb heavy 100 6 60 18 70
 ```
 
-Generate bcrypt hash:
+Generated typing events are tagged with `metadata.synthetic = true`.
+
+## Dataset Export
 
 ```bash
-ruby -rbcrypt -e "puts BCrypt::Password.create('change_me')"
-```
-
-## Evaluation
-
-Export dataset and generate report (run from repo root):
-
-```bash
+# biometric attempt export + report
 ruby tools/export_dataset.rb json
 ruby tools/evaluate_dataset.rb docs/evaluation.md
+
+# typing capture export
+ruby tools/export_typing_dataset.rb
 ```
 
-Phase 11 tables:
+## Database Backup (Safe for Public Repo)
 
-- `audit_events`
-- `biometric_attempts`
-- `evaluation_reports`
+Raw DB dumps are **not** committed. Use encrypted backups.
+
+### 1) Create raw dump locally (ignored by git)
+
+Output location: `exports/db_backups/*.dump`
+
+### 2) Encrypt dump (commit-safe)
+
+```bash
+set DB_BACKUP_PASSPHRASE=your-strong-secret
+ruby tools/encrypt_db_backup.rb exports/db_backups/biokey_db_YYYYMMDD_HHMMSS.dump
+```
+
+Encrypted output goes to `secure-backups/*.enc`.
+
+### 3) Decrypt when needed
+
+```bash
+set DB_BACKUP_PASSPHRASE=your-strong-secret
+ruby tools/decrypt_db_backup.rb secure-backups/biokey_db_YYYYMMDD_HHMMSS.dump.enc
+```
+
+Important:
+
+- Keep passphrase out of git (for example in local `.secrets/` or your password manager).
+- `.secrets/` and `exports/` are ignored by `.gitignore`.
 
 ## Tests
 
@@ -170,19 +188,18 @@ On push/PR to `main`:
 
 - Backend syntax check (`bundle exec ruby -c app.rb`)
 - Backend migration run (`bundle exec ruby db/migrate.rb`)
-- Backend unit + integration tests via Bundler
+- Backend unit + integration tests
 - Android unit tests
-- Android debug assemble build
+- Android assemble debug build
 
 ## Security + Operations Notes
 
-- Runtime schema creation is disabled in app boot; run migrations before starting backend.
-- Dashboard proxy trust is gated by `TRUST_PROXY=1`. Without it, localhost checks use `request.ip` only.
-- Attempt labeling APIs are available:
-	- `POST /admin/api/attempt/:id/label`
-	- `POST /admin/api/attempts/label-bulk`
-- FAR/FRR reports only become meaningful when attempts are labeled as `GENUINE` or `IMPOSTER`.
+- Runtime schema creation is disabled in app boot; run migrations before app start.
+- Dashboard read access is allowed on localhost.
+- Dashboard control actions require admin session or `X-Admin-Token`.
+- Proxy trust is gated by `TRUST_PROXY=1`.
+- FAR/FRR report quality depends on labeled attempts (`GENUINE` / `IMPOSTER`).
 
 ## Prototype Notice
 
-BioKey is a prototype and not fully production-hardened.
+BioKey is a prototype and is not fully production-hardened.

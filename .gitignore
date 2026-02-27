@@ -22,3 +22,10 @@ backend-server/config/database.yml
 
 # Local exports
 exports/
+
+# Local secret material (never commit)
+.secrets/
+
+# Encrypted database backups allowed in repo
+!secure-backups/
+!secure-backups/*.enc
