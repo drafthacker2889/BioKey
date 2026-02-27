@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioKey Social Prototype</title>
+  <link rel="stylesheet" href="/prototype.css" />
+</head>
+<body>
+  <main class="proto-shell wide">
+    <header class="topbar card">
+      <div>
+        <h1>Social Prototype</h1>
+        <p id="profileLine" class="muted">Loading profile...</p>
+      </div>
+      <button id="logoutBtn" class="ghost">Logout</button>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Create Post</h2>
+        <input id="postTitle" type="text" placeholder="Post title" maxlength="140" />
+        <textarea id="postBody" rows="6" placeholder="What are you thinking?"></textarea>
+        <div class="row">
+          <button id="postBtn">Publish (mock)</button>
+          <span class="muted" id="postHint">Typing is captured in context: post_composer</span>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Comment Box</h2>
+        <textarea id="commentBody" rows="4" placeholder="Write a comment..."></textarea>
+        <div class="row">
+          <button id="commentBtn">Comment (mock)</button>
+          <span class="muted">Context: comment_box</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Capture Telemetry</h2>
+      <pre id="captureStatus" class="status">Capture pending...</pre>
+    </section>
+  </main>
+
+  <script src="/prototype.js"></script>
+</body>
+</html>

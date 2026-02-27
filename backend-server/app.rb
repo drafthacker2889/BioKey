@@ -998,6 +998,120 @@ post '/auth/refresh' do
   end
 end
 
+def authenticated_api_session
+  token = bearer_token
+  return nil if token.nil? || token.empty?
+
+  active_session_for(token)
+rescue
+  nil
+end
+
+def require_authenticated_api_session!
+  session = authenticated_api_session
+  halt 401, json_error('Unauthorized', 401, 'UNAUTHORIZED') if session.nil?
+  session
+end
+
+get '/prototype' do
+  redirect '/prototype/login'
+end
+
+get '/prototype/login' do
+  erb :prototype_login
+end
+
+get '/prototype/feed' do
+  erb :prototype_feed
+end
+
+get '/prototype/api/profile' do
+  content_type :json
+  session = require_authenticated_api_session!
+
+  json_success({
+    status: 'SUCCESS',
+    user_id: session['user_id'].to_i,
+    username: session['username']
+  })
+end
+
+post '/prototype/api/typing-events' do
+  content_type :json
+  session = require_authenticated_api_session!
+
+  payload = JSON.parse(request.body.read)
+  context = payload['context'].to_s.strip
+  field_name = payload['field_name'].to_s.strip
+  client_session_id = payload['client_session_id'].to_s.strip
+  events = payload['events']
+
+  return json_error('context is required', 400, 'INVALID_CONTEXT') if context.empty? || context.length > 64
+  return json_error('field_name is required', 400, 'INVALID_FIELD') if field_name.empty? || field_name.length > 64
+  return json_error('client_session_id is required', 400, 'INVALID_SESSION') if client_session_id.empty? || client_session_id.length > 64
+  return json_error('events must be a non-empty array', 400, 'INVALID_EVENTS') unless events.is_a?(Array) && !events.empty?
+  return json_error('events exceeds max batch size (500)', 400, 'INVALID_EVENTS') if events.length > 500
+
+  inserted = 0
+  DB.transaction do |tx|
+    events.each do |event|
+      event_type = event['event_type'].to_s.strip.upcase
+      key_value = event['key_value'].to_s[0, 64]
+      key_code = event['key_code']
+      dwell_ms = event['dwell_ms']
+      flight_ms = event['flight_ms']
+      typed_length = event['typed_length']
+      cursor_pos = event['cursor_pos']
+      client_ts_ms = event['client_ts_ms']
+
+      next if event_type.empty? || event_type.length > 24
+
+      tx.exec_params(
+        "INSERT INTO typing_capture_events (
+           user_id, context, field_name, client_session_id, event_type,
+           key_value, key_code, dwell_ms, flight_ms, typed_length,
+           cursor_pos, client_ts_ms, ip_address, request_id, metadata
+         ) VALUES (
+           $1, $2, $3, $4, $5,
+           $6, $7, $8, $9, $10,
+           $11, $12, $13, $14, $15::jsonb
+         )",
+        [
+          session['user_id'].to_i,
+          context,
+          field_name,
+          client_session_id,
+          event_type,
+          key_value,
+          key_code,
+          dwell_ms,
+          flight_ms,
+          typed_length,
+          cursor_pos,
+          client_ts_ms,
+          client_ip,
+          current_request_id,
+          (event['metadata'].is_a?(Hash) ? event['metadata'] : {}).to_json
+        ]
+      )
+
+      inserted += 1
+    end
+  end
+
+  json_success({ status: 'SUCCESS', inserted: inserted })
+rescue JSON::ParserError
+  json_error('Invalid JSON format', 400, 'INVALID_JSON')
+rescue PG::UndefinedTable
+  json_error('typing_capture_events table missing. Run migrations.', 503, 'TYPING_TABLE_MISSING')
+rescue PG::Error => e
+  $logger.error "Database error in /prototype/api/typing-events: #{e.message}"
+  json_error('Database error')
+rescue => e
+  $logger.error "Unknown error in /prototype/api/typing-events: #{e.message}"
+  json_error('Internal Server Error')
+end
+
 def client_ip
   forwarded = request.env['HTTP_X_FORWARDED_FOR']
   return forwarded.split(',').first.strip unless forwarded.nil? || forwarded.strip.empty?
@@ -1155,6 +1269,84 @@ get '/admin/api/auth-feed' do
   with_dashboard_service do |service|
     json_success({ events: service.latest_auth_events(limit: limit) })
   end
+end
+
+get '/admin/api/typing-capture' do
+  content_type :json
+  require_dashboard_read!
+
+  limit = params['limit']&.to_i || 200
+  limit = 1000 if limit > 1000
+  limit = 1 if limit < 1
+
+  clauses = []
+  binds = []
+
+  if params['user_id'] && !params['user_id'].to_s.strip.empty?
+    user_id = params['user_id'].to_i
+    return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+    binds << user_id
+    clauses << "e.user_id = $#{binds.length}"
+  end
+
+  if params['context'] && !params['context'].to_s.strip.empty?
+    binds << params['context'].to_s.strip[0, 64]
+    clauses << "e.context = $#{binds.length}"
+  end
+
+  where_sql = clauses.empty? ? '' : "WHERE #{clauses.join(' AND ')}"
+  binds << limit
+
+  rows = DB.exec_params(
+    "SELECT e.id, e.user_id, u.username, e.context, e.field_name, e.client_session_id,
+            e.event_type, e.key_value, e.key_code, e.dwell_ms, e.flight_ms,
+            e.typed_length, e.cursor_pos, e.client_ts_ms, e.ip_address,
+            e.request_id, e.metadata, e.captured_at
+     FROM typing_capture_events e
+     LEFT JOIN users u ON u.id = e.user_id
+     #{where_sql}
+     ORDER BY e.captured_at DESC
+     LIMIT $#{binds.length}",
+    binds
+  )
+
+  events = rows.map do |row|
+    {
+      id: row['id'].to_i,
+      user_id: row['user_id']&.to_i,
+      username: row['username'],
+      context: row['context'],
+      field_name: row['field_name'],
+      client_session_id: row['client_session_id'],
+      event_type: row['event_type'],
+      key_value: row['key_value'],
+      key_code: row['key_code']&.to_i,
+      dwell_ms: row['dwell_ms']&.to_f,
+      flight_ms: row['flight_ms']&.to_f,
+      typed_length: row['typed_length']&.to_i,
+      cursor_pos: row['cursor_pos']&.to_i,
+      client_ts_ms: row['client_ts_ms']&.to_i,
+      ip_address: row['ip_address'],
+      request_id: row['request_id'],
+      metadata: begin
+        raw = row['metadata']
+        raw.nil? ? {} : JSON.parse(raw)
+      rescue
+        {}
+      end,
+      captured_at: row['captured_at']
+    }
+  end
+
+  json_success({ status: 'SUCCESS', events: events, count: events.length })
+rescue PG::UndefinedTable
+  json_error('typing_capture_events table missing. Run migrations.', 503, 'TYPING_TABLE_MISSING')
+rescue PG::Error => e
+  $logger.error "Database error in /admin/api/typing-capture: #{e.message}"
+  json_error('Database error')
+rescue => e
+  $logger.error "Unknown error in /admin/api/typing-capture: #{e.message}"
+  json_error('Internal Server Error')
 end
 
 post '/admin/api/attempt/:id/label' do

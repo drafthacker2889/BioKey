@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioKey Prototype Login</title>
+  <link rel="stylesheet" href="/prototype.css" />
+</head>
+<body>
+  <main class="proto-shell">
+    <section class="card">
+      <h1>Prototype Login</h1>
+      <p class="muted">Login to open the social prototype and capture typing behavior separately.</p>
+
+      <form id="loginForm" class="form">
+        <label>
+          Username
+          <input id="username" type="text" placeholder="username" required />
+        </label>
+
+        <label>
+          Password
+          <input id="password" type="password" placeholder="password" required />
+        </label>
+
+        <button type="submit">Login</button>
+      </form>
+
+      <pre id="statusBox" class="status">Ready.</pre>
+    </section>
+  </main>
+
+  <script src="/prototype.js"></script>
+</body>
+</html>

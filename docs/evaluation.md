@@ -1,18 +1,18 @@
 # BioKey Evaluation Report
 
-Generated at: 2026-02-22T03:20:05Z
+Generated at: 2026-02-27T11:03:30Z
 
 ## Dataset Summary
 
-- Labeled samples: 2
-- Genuine samples: 2
-- Imposter samples: 0
+- Labeled samples: 10
+- Genuine samples: 8
+- Imposter samples: 2
 
 ## Metrics
 
-- FAR (False Accept Rate): N/A
+- FAR (False Accept Rate): 100.00%
 - FRR (False Reject Rate): 0.00%
-- False accepts: 0
+- False accepts: 2
 - False rejects: 0
 
 ## Notes

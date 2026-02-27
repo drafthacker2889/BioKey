@@ -1,0 +1,104 @@
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #0b1020;
+  color: #e9edf8;
+}
+
+.proto-shell {
+  max-width: 760px;
+  margin: 28px auto;
+  padding: 0 16px;
+}
+
+.proto-shell.wide {
+  max-width: 1100px;
+}
+
+.card {
+  background: #131a2d;
+  border: 1px solid #263250;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+h1, h2 {
+  margin: 0 0 10px;
+}
+
+.muted {
+  color: #9fb0d6;
+  font-size: 13px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 14px;
+}
+
+input,
+textarea {
+  background: #0e1528;
+  color: #eef2ff;
+  border: 1px solid #2f4066;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 14px;
+}
+
+button {
+  background: #4a7dff;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid #4a7dff;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.status {
+  background: #0e1528;
+  border: 1px solid #2f4066;
+  border-radius: 8px;
+  padding: 10px;
+  white-space: pre-wrap;
+}
