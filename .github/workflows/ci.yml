@@ -96,6 +96,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
       - name: Run Android unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
 

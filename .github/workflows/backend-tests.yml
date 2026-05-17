@@ -59,9 +59,18 @@ jobs:
         DB_USER: postgres
         DB_PASSWORD: postgres
         DB_NAME: biokey_test
+        ADMIN_TOKEN: ci-admin-token
+        ADMIN_TOKEN_HASH: 3155b165e9b9b9fe6602b25e139a285bfea090df9b7edbcc08c5f7d224f25438
+        APP_SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        SESSION_TOKEN_PEPPER: ci_session_token_pepper_0123456789abcdef0123456789abcdef
+        APP_AUTH_PEPPER: ci_auth_pepper_0123456789abcdef
+        APP_REQUIRE_HTTPS: "false"
         APP_ENV: test
         RACK_ENV: test
-      run: bundle exec ruby -I lib:test test/**/*_test.rb
+      run: |
+        for test_file in test/*_test.rb; do
+          bundle exec ruby -Itest "$test_file"
+        done
     
     - name: Upload coverage
       uses: codecov/codecov-action@v3
@@ -84,6 +93,10 @@ jobs:
     
     - name: Check Ruby syntax
       working-directory: backend-server
+      env:
+        APP_SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        SESSION_TOKEN_PEPPER: ci_session_token_pepper_0123456789abcdef0123456789abcdef
+        APP_AUTH_PEPPER: ci_auth_pepper_0123456789abcdef
       run: |
         for file in lib/*.rb app.rb models/*.rb; do
           [ -f "$file" ] && ruby -c "$file" || true

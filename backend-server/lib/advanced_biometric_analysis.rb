@@ -9,11 +9,13 @@ class AdvancedBiometricAnalysis
     return { shift_detected: false } if historical_samples.empty?
 
     # Kolmogorov-Smirnov test for distribution shift
-    current_dwell = current_samples.map { |s| s['dwell'] }.sort
-    current_flight = current_samples.map { |s| s['flight'] }.sort
+    current_dwell = current_samples.map { |s| s['dwell'] }.compact.map(&:to_f).sort
+    current_flight = current_samples.map { |s| s['flight'] }.compact.map(&:to_f).sort
     
-    hist_dwell = historical_samples.map { |s| s['dwell'] }.sort
-    hist_flight = historical_samples.map { |s| s['flight'] }.sort
+    hist_dwell = historical_samples.map { |s| s['dwell'] }.compact.map(&:to_f).sort
+    hist_flight = historical_samples.map { |s| s['flight'] }.compact.map(&:to_f).sort
+
+    return { shift_detected: false, shift_score: 0.0, dwell_ks: 0.0, flight_ks: 0.0, recommendation: 'accept' } if current_dwell.empty? || current_flight.empty? || hist_dwell.empty? || hist_flight.empty?
 
     ks_dwell = kolmogorov_smirnov_statistic(current_dwell, hist_dwell)
     ks_flight = kolmogorov_smirnov_statistic(current_flight, hist_flight)
@@ -174,17 +176,15 @@ class AdvancedBiometricAnalysis
   def self.kolmogorov_smirnov_statistic(sample1, sample2)
     return 0 if sample1.empty? || sample2.empty?
 
+    merged_values = (sample1 + sample2).uniq.sort
     n1 = sample1.length.to_f
     n2 = sample2.length.to_f
 
-    i = j = 0
-    max_d = 0
-
-    while i < sample1.length && j < sample2.length
-      d = (i + 1) / n1 - (j + 1) / n2
-      max_d = [max_d, d.abs].max
-
-      sample1[i] <= sample2[j] ? i += 1 : j += 1
+    max_d = 0.0
+    merged_values.each do |x|
+      cdf1 = sample1.count { |v| v <= x } / n1
+      cdf2 = sample2.count { |v| v <= x } / n2
+      max_d = [max_d, (cdf1 - cdf2).abs].max
     end
 
     max_d
@@ -229,8 +229,22 @@ class AdvancedBiometricAnalysis
 
   # Helper: Weighted statistical distance
   def self.weighted_distance(attempt, profile)
-    # Standard Mahalanobis-like distance with adaptive weighting
-    # (Placeholder - would integrate with AuthService's scoring)
-    0.5
+    dwell_values = profile.map { |p| p['avg_dwell_time'] }.compact.map(&:to_f)
+    flight_values = profile.map { |p| p['avg_flight_time'] }.compact.map(&:to_f)
+    return 0.5 if dwell_values.empty? || flight_values.empty?
+
+    dwell_mean = dwell_values.sum / dwell_values.length
+    flight_mean = flight_values.sum / flight_values.length
+
+    dwell_std = Math.sqrt(dwell_values.sum { |v| (v - dwell_mean) ** 2 } / [dwell_values.length, 1].max)
+    flight_std = Math.sqrt(flight_values.sum { |v| (v - flight_mean) ** 2 } / [flight_values.length, 1].max)
+
+    dwell_std = [dwell_std, 5.0].max
+    flight_std = [flight_std, 5.0].max
+
+    dwell_z = ((attempt['dwell'].to_f - dwell_mean) / dwell_std).abs
+    flight_z = ((attempt['flight'].to_f - flight_mean) / flight_std).abs
+
+    [[Math.sqrt((dwell_z**2 + flight_z**2) / 2.0) / 3.0, 1.0].min, 0.0].max
   end
 end
