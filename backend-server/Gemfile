@@ -22,7 +22,7 @@ gem 'dotenv', '~> 2.8'  # Environment variable management
 gem 'securerandom'
 
 # Native Extensions
-gem 'ffi', '~> 1.15'
+gem 'ffi', '~> 1.17'
 
 # Testing
 group :test do
