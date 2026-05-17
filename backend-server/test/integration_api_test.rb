@@ -1,10 +1,14 @@
 require 'minitest/autorun'
 require 'rack/test'
 require 'json'
+require 'digest'
 
 ENV['RACK_ENV'] = 'test'
 ENV['ADMIN_TOKEN'] ||= 'ci-admin-token'
+ENV['ADMIN_TOKEN_HASH'] ||= Digest::SHA256.hexdigest(ENV['ADMIN_TOKEN'])
 ENV['APP_SESSION_SECRET'] ||= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+ENV['SESSION_TOKEN_PEPPER'] ||= 'test_session_token_pepper_0123456789abcdef'
+ENV['APP_AUTH_PEPPER'] ||= 'test_auth_pepper_0123456789abcdef'
 
 require_relative '../app'
 
@@ -51,10 +55,12 @@ class IntegrationApiTest < Minitest::Test
       { pair: 'fg', dwell: 108, flight: 63 }
     ]
 
-    post '/v1/train', { user_id: user_id, timings: timings }.to_json, { 'CONTENT_TYPE' => 'application/json' }
+        post '/v1/train', { user_id: user_id, timings: timings }.to_json,
+          { 'CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => "Bearer #{token}" }
     assert_equal 200, last_response.status
 
-    post '/v1/login', { user_id: user_id, timings: timings }.to_json, { 'CONTENT_TYPE' => 'application/json' }
+        post '/v1/login', { user_id: user_id, timings: timings }.to_json,
+          { 'CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => "Bearer #{token}" }
     assert_equal 200, last_response.status
     bio_body = parse_json(last_response.body)
     assert_includes %w[SUCCESS CHALLENGE DENIED], bio_body['status']

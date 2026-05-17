@@ -9,12 +9,12 @@ class DashboardService
     {
       db_connected: db_connected?,
       uptime_seconds: @uptime_seconds.to_i,
-      attempts_24h: count_attempts("NOW() - INTERVAL '24 hours'"),
-      attempts_7d: count_attempts("NOW() - INTERVAL '7 days'"),
+      attempts_24h: count_attempts(24),
+      attempts_7d: count_attempts(24 * 7),
       outcomes_7d: outcomes_breakdown,
       avg_coverage_24h: avg_coverage_24h,
-      rate_limit_hits_24h: verdict_count("('AUTH_RATE','REG_RATE')", "NOW() - INTERVAL '24 hours'"),
-      lockouts_24h: verdict_count("('AUTH_LOCK')", "NOW() - INTERVAL '24 hours'"),
+      rate_limit_hits_24h: verdict_count(%w[AUTH_RATE REG_RATE], 24),
+      lockouts_24h: verdict_count(%w[AUTH_LOCK], 24),
       can_control: can_control,
       is_admin: is_admin
     }
@@ -208,8 +208,13 @@ class DashboardService
     false
   end
 
-  def count_attempts(cutoff_sql)
-    @db.exec("SELECT COUNT(*) AS c FROM biometric_attempts WHERE created_at > #{cutoff_sql}")[0]['c'].to_i
+  def count_attempts(hours_back)
+    @db.exec_params(
+      "SELECT COUNT(*) AS c
+       FROM biometric_attempts
+       WHERE created_at > NOW() - ($1::int * INTERVAL '1 hour')",
+      [hours_back.to_i]
+    )[0]['c'].to_i
   end
 
   def outcomes_breakdown
@@ -237,12 +242,14 @@ class DashboardService
     value.to_f.round(4)
   end
 
-  def verdict_count(verdict_sql, cutoff_sql)
-    @db.exec(
+  def verdict_count(verdicts, hours_back)
+    verdict_array = "{#{Array(verdicts).map { |v| v.to_s.gsub(/[{}",]/, '') }.join(',')}}"
+    @db.exec_params(
       "SELECT COUNT(*) AS c
        FROM access_logs
-       WHERE verdict IN #{verdict_sql}
-         AND attempted_at > #{cutoff_sql}"
+       WHERE verdict = ANY($1::text[])
+         AND attempted_at > NOW() - ($2::int * INTERVAL '1 hour')",
+      [verdict_array, hours_back.to_i]
     )[0]['c'].to_i
   end
 

@@ -87,15 +87,15 @@ object BioKeyApiClient {
     }
 
     suspend fun getAuthProfile(baseUrl: String, token: String): ApiResult = executeAuthorized(baseUrl, token) {
-        it.getAuthProfile()
+        it.getAuthProfile("Bearer $token")
     }
 
     suspend fun postAuthLogout(baseUrl: String, token: String): ApiResult = executeAuthorized(baseUrl, token) {
-        it.postAuthLogout()
+        it.postAuthLogout("Bearer $token")
     }
 
     suspend fun postAuthRefresh(baseUrl: String, token: String): ApiResult = executeAuthorized(baseUrl, token) {
-        it.postAuthRefresh()
+        it.postAuthRefresh("Bearer $token")
     }
 
     private suspend fun executeAuthorized(
@@ -104,23 +104,7 @@ object BioKeyApiClient {
         call: suspend (BioKeyRetrofitService) -> Response<okhttp3.ResponseBody>
     ): ApiResult = withContext(Dispatchers.IO) {
         try {
-            val requestClient = okHttpClient.newBuilder()
-                .addInterceptor { chain ->
-                    val request = chain.request().newBuilder()
-                        .addHeader("Accept", "application/json")
-                        .addHeader("Authorization", "Bearer $token")
-                        .build()
-                    chain.proceed(request)
-                }
-                .build()
-
-            val service = Retrofit.Builder()
-                .baseUrl(normalizeBaseUrl(baseUrl))
-                .client(requestClient)
-                .build()
-                .create(BioKeyRetrofitService::class.java)
-
-            val response = call(service)
+            val response = call(serviceFor(baseUrl))
             val body = response.body()?.string().orEmpty().ifBlank {
                 response.errorBody()?.string().orEmpty()
             }

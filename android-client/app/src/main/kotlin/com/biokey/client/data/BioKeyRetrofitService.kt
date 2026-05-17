@@ -5,6 +5,7 @@ import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
 
 data class TimingPayload(
@@ -31,11 +32,17 @@ interface BioKeyRetrofitService {
     suspend fun postAuthLogin(@Body payload: AuthCredentialPayload): Response<ResponseBody>
 
     @GET("auth/profile")
-    suspend fun getAuthProfile(): Response<ResponseBody>
+    suspend fun getAuthProfile(
+        @Header("Authorization") authorization: String
+    ): Response<ResponseBody>
 
     @POST("auth/logout")
-    suspend fun postAuthLogout(): Response<ResponseBody>
+    suspend fun postAuthLogout(
+        @Header("Authorization") authorization: String
+    ): Response<ResponseBody>
 
     @POST("auth/refresh")
-    suspend fun postAuthRefresh(): Response<ResponseBody>
+    suspend fun postAuthRefresh(
+        @Header("Authorization") authorization: String
+    ): Response<ResponseBody>
 }

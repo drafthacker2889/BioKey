@@ -1,16 +1,16 @@
 class AuthService
-  DEFAULT_SUCCESS_THRESHOLD = 1.75
-  DEFAULT_CHALLENGE_THRESHOLD = 3.0
+  DEFAULT_SUCCESS_THRESHOLD = ENV.fetch('AUTH_DEFAULT_SUCCESS_THRESHOLD', '1.75').to_f
+  DEFAULT_CHALLENGE_THRESHOLD = ENV.fetch('AUTH_DEFAULT_CHALLENGE_THRESHOLD', '3.0').to_f
 
-  MIN_MATCHED_PAIRS = 6
-  MIN_COVERAGE_RATIO = 0.55
-  MIN_FEATURE_STD = 15.0
-  MAX_Z = 5.0
-  HUBER_DELTA = 2.5
+  MIN_MATCHED_PAIRS = ENV.fetch('AUTH_MIN_MATCHED_PAIRS', '6').to_i
+  MIN_COVERAGE_RATIO = ENV.fetch('AUTH_MIN_COVERAGE_RATIO', '0.55').to_f
+  MIN_FEATURE_STD = ENV.fetch('AUTH_MIN_FEATURE_STD', '15.0').to_f
+  MAX_Z = ENV.fetch('AUTH_MAX_Z', '5.0').to_f
+  HUBER_DELTA = ENV.fetch('AUTH_HUBER_DELTA', '2.5').to_f
 
-  CALIBRATION_MIN_SCORES = 10
-  SCORE_HISTORY_LIMIT = 200
-  ADAPTIVE_UPDATE_MAX_PAIRS = 160
+  CALIBRATION_MIN_SCORES = ENV.fetch('AUTH_CALIBRATION_MIN_SCORES', '10').to_i
+  SCORE_HISTORY_LIMIT = ENV.fetch('AUTH_SCORE_HISTORY_LIMIT', '200').to_i
+  ADAPTIVE_UPDATE_MAX_PAIRS = ENV.fetch('AUTH_ADAPTIVE_UPDATE_MAX_PAIRS', '160').to_i
 
   def self.normalize_attempt_timing(timing, index)
     if timing.is_a?(Hash)
@@ -56,7 +56,18 @@ class AuthService
 
     profile_map = {}
     result.each do |row|
-      profile_map[row['key_pair']] = row
+      key_pair = row['key_pair'].to_s
+      next if key_pair.empty?
+
+      std_dwell = row['std_dev_dwell'].to_f
+      std_flight = row['std_dev_flight'].to_f
+      next unless std_dwell.finite? && std_flight.finite?
+
+      profile_map[key_pair] = row
+    end
+
+    if profile_map.empty?
+      return { status: "ERROR", message: "No usable profile data found" }
     end
 
     matched = []
@@ -100,7 +111,6 @@ class AuthService
     thresholds = calibrated_thresholds_for_user(user_id)
 
     if distance_score <= thresholds[:success]
-      update_profile(user_id, normalized_attempts.take(ADAPTIVE_UPDATE_MAX_PAIRS))
       record_score(user_id, distance_score, 'SUCCESS', coverage_ratio, matched_pairs)
       return {
         status: "SUCCESS",
@@ -138,8 +148,9 @@ class AuthService
     weight_sum = 0.0
 
     matched.each do |feature|
-      std_dwell = [feature[:std_dwell], MIN_FEATURE_STD].max
-      std_flight = [feature[:std_flight], MIN_FEATURE_STD].max
+      std_dwell = [feature[:std_dwell].to_f.abs, MIN_FEATURE_STD].max
+      std_flight = [feature[:std_flight].to_f.abs, MIN_FEATURE_STD].max
+      next unless std_dwell.finite? && std_flight.finite? && std_dwell > 0 && std_flight > 0
 
       z_dwell = ((feature[:attempt_dwell] - feature[:mean_dwell]) / std_dwell).clamp(-MAX_Z, MAX_Z)
       z_flight = ((feature[:attempt_flight] - feature[:mean_flight]) / std_flight).clamp(-MAX_Z, MAX_Z)
@@ -147,9 +158,10 @@ class AuthService
       loss_dwell = huber_loss(z_dwell)
       loss_flight = huber_loss(z_flight)
 
-      stability_weight = Math.log([feature[:sample_count], 2].max + 1.0)
+      stability_weight = Math.log([feature[:sample_count].to_i, 2].max + 1.0)
       variance_weight = (1.0 / std_dwell) + (1.0 / std_flight)
       weight = [stability_weight * variance_weight, 0.01].max
+      next unless weight.finite? && weight > 0
 
       weighted_loss_sum += weight * (loss_dwell + loss_flight)
       weight_sum += weight * 2.0

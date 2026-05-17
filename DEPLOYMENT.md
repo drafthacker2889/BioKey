@@ -129,6 +129,9 @@ API_BIND=0.0.0.0
 APP_ENV=production
 APP_SESSION_SECRET=<generate_with_SecureRandom.hex(32)>
 APP_REQUIRE_HTTPS=true
+REDIS_URL=redis://redis:6379/0
+ENABLE_ASYNC_ADMIN_JOBS=true
+DATA_RETENTION_DAYS=365
 
 # Logging
 LOG_LEVEL=INFO
@@ -222,7 +225,7 @@ Example:
 
 ```bash
 # Backend health
-curl -f http://localhost:4567/login
+curl -f http://localhost:4567/health
 
 # Database health (from container)
 docker-compose -f docker-compose.prod.yml exec postgres \
@@ -256,6 +259,18 @@ APP_REQUIRE_HTTPS=true
 ```
 
 The server will reject non-HTTPS requests with HTTP 426.
+
+### Distributed Rate Limiting and Async Jobs
+
+When `REDIS_URL` is set, BioKey uses Redis for cross-process rate limiting and queued admin jobs.
+
+- Keep `ENABLE_ASYNC_ADMIN_JOBS=true` to queue expensive exports/evaluations.
+- Query job state with `GET /admin/api/jobs/:job_id`.
+- Set `DATA_RETENTION_DAYS` to control automatic purge windows.
+
+### Retention
+
+Run `POST /admin/api/apply-retention` as an admin to delete old biometric attempts, access logs, and score history.
 
 ### Security Headers
 

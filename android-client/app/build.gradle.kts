@@ -9,11 +9,14 @@ android {
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
+        val biokeyBaseUrl = (project.findProperty("BIOKEY_BASE_URL") as String?) ?: "https://localhost:4567"
+
         applicationId = "com.biokey.client"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "BIOKEY_BASE_URL", "\"$biokeyBaseUrl\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -36,6 +39,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"

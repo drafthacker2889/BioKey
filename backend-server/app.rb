@@ -8,6 +8,8 @@ require 'securerandom'
 require 'bcrypt'
 require 'thread'
 require 'time'
+require 'rack/utils'
+require 'redis'
 require_relative 'lib/auth_service'
 require_relative 'lib/dashboard_service'
 require_relative 'lib/evaluation_service'
@@ -31,10 +33,19 @@ class ApiVersionMiddleware
   end
 end
 
+def required_env!(key, min_length: nil)
+  value = ENV[key].to_s
+  abort("Missing required environment variable: #{key}") if value.empty?
+  if !min_length.nil? && value.length < min_length
+    abort("Environment variable #{key} must be at least #{min_length} characters")
+  end
+  value
+end
+
 set :bind, '0.0.0.0'
 set :port, 4567
 set :sessions, true
-set :session_secret, ENV['APP_SESSION_SECRET'] || 'biokey_dev_session_secret_change_me_0123456789abcdef0123456789ab'
+set :session_secret, required_env!('APP_SESSION_SECRET', min_length: 32)
 use ApiVersionMiddleware
 
 # Configure logging
@@ -46,11 +57,42 @@ AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
 AUTH_LOCKOUT_THRESHOLD = 5
 AUTH_LOCKOUT_WINDOW_MINUTES = 15
 APP_BOOT_TIME = Time.now
+APP_ENV = ENV.fetch('APP_ENV', ENV.fetch('RACK_ENV', 'development'))
+APP_REQUIRE_HTTPS = ENV['APP_REQUIRE_HTTPS'] == 'true'
 ENABLE_ADVANCED_INTELLIGENCE = ENV.fetch('ENABLE_ADVANCED_INTELLIGENCE', 'true') == 'true'
-SESSION_TOKEN_PEPPER = ENV['SESSION_TOKEN_PEPPER'] || 'biokey_session_token_pepper_change_me'
+SESSION_TOKEN_PEPPER = required_env!('SESSION_TOKEN_PEPPER', min_length: 32)
+APP_AUTH_PEPPER = required_env!('APP_AUTH_PEPPER', min_length: 16)
+SESSION_DURATION_HOURS = ENV.fetch('SESSION_DURATION_HOURS', '4').to_i.clamp(1, 12)
+TRUSTED_PROXY_IPS = ENV.fetch('TRUSTED_PROXY_IPS', '127.0.0.1,::1').split(',').map(&:strip)
+BIOMETRIC_LOGIN_RATE_LIMIT_MAX = ENV.fetch('BIOMETRIC_LOGIN_RATE_LIMIT_MAX', '20').to_i
+BIOMETRIC_TRAIN_RATE_LIMIT_MAX = ENV.fetch('BIOMETRIC_TRAIN_RATE_LIMIT_MAX', '15').to_i
+ADMIN_API_RATE_LIMIT_MAX = ENV.fetch('ADMIN_API_RATE_LIMIT_MAX', '60').to_i
+ADMIN_API_RATE_LIMIT_WINDOW_SECONDS = ENV.fetch('ADMIN_API_RATE_LIMIT_WINDOW_SECONDS', '60').to_i
+APP_ALLOWED_ORIGINS = ENV.fetch('APP_ALLOWED_ORIGINS', '').split(',').map(&:strip).reject(&:empty?)
+TIMING_KEY_PAIR_REGEX = /\A[a-zA-Z0-9:_-]{1,16}\z/
+TYPING_EVENT_TYPE_ALLOWLIST = %w[KEYDOWN KEYUP INPUT BACKSPACE DELETE PASTE CUT FOCUS BLUR SUBMIT COMPOSITIONSTART COMPOSITIONEND].freeze
+REDIS_URL = ENV['REDIS_URL'].to_s.strip
+ENABLE_ASYNC_ADMIN_JOBS = ENV.fetch('ENABLE_ASYNC_ADMIN_JOBS', 'true') == 'true'
+
+if APP_ENV == 'production' && !APP_REQUIRE_HTTPS
+  abort('APP_REQUIRE_HTTPS=true is required in production')
+end
 
 RATE_LIMIT_MUTEX = Mutex.new
 RATE_LIMIT_BUCKETS = {}
+
+REDIS_CLIENT = begin
+  if REDIS_URL.empty?
+    nil
+  else
+    redis = Redis.new(url: REDIS_URL, connect_timeout: 1.5, read_timeout: 1.5, write_timeout: 1.5)
+    redis.ping
+    redis
+  end
+rescue => e
+  warn "Redis unavailable, falling back to in-memory rate limiting: #{e.message}"
+  nil
+end
 
 before do
   request_id = request.env['HTTP_X_REQUEST_ID']
@@ -66,11 +108,19 @@ before do
   headers 'X-Frame-Options' => 'DENY'
   headers 'Referrer-Policy' => 'no-referrer'
 
+  origin = request.env['HTTP_ORIGIN'].to_s
+  if !origin.empty? && APP_ALLOWED_ORIGINS.include?(origin)
+    headers 'Access-Control-Allow-Origin' => origin
+    headers 'Vary' => 'Origin'
+    headers 'Access-Control-Allow-Methods' => 'GET,POST,OPTIONS'
+    headers 'Access-Control-Allow-Headers' => 'Authorization,Content-Type,X-Admin-Token,X-Request-Id'
+  end
+
   if request.secure? || request.env['HTTP_X_FORWARDED_PROTO'] == 'https'
     headers 'Strict-Transport-Security' => 'max-age=31536000; includeSubDomains'
   end
 
-  if ENV['APP_REQUIRE_HTTPS'] == 'true'
+  if APP_REQUIRE_HTTPS
     secure = request.secure? || request.env['HTTP_X_FORWARDED_PROTO'] == 'https'
     unless secure
       content_type :json
@@ -81,7 +131,16 @@ end
 
 # Load Database Configuration
 begin
-  db_config = File.exist?('config/database.yml') ? YAML.load_file('config/database.yml')['development'] : {}
+  db_config = if File.exist?('config/database.yml')
+                loaded = if YAML.respond_to?(:safe_load_file)
+                           YAML.safe_load_file('config/database.yml', permitted_classes: [], aliases: false)
+                         else
+                           YAML.safe_load(File.read('config/database.yml'), permitted_classes: [], aliases: false)
+                         end
+                loaded.is_a?(Hash) ? (loaded['development'] || {}) : {}
+              else
+                {}
+              end
 rescue => e
   $logger.warn "Could not load config/database.yml: #{e.message}"
   db_config = {}
@@ -89,8 +148,12 @@ end
 
 DB_NAME = ENV['DB_NAME'] || db_config['database'] || 'biokey_db'
 DB_USER = ENV['DB_USER'] || db_config['user'] || 'postgres'
-DB_PASS = ENV['DB_PASSWORD'] || db_config['password'] || 'change_me'
+DB_PASS = ENV['DB_PASSWORD'] || db_config['password']
 DB_HOST = ENV['DB_HOST'] || db_config['host'] || 'localhost'
+
+if APP_ENV == 'production' && DB_PASS.to_s.empty?
+  abort('DB_PASSWORD is required in production')
+end
 
 class ResilientDb
   def initialize(dbname:, user:, password:, host:, logger:)
@@ -274,13 +337,20 @@ rescue
 end
 
 def localhost_request?
-  ip = request.ip.to_s
+  ip = request.env['REMOTE_ADDR'].to_s
   return true if ['127.0.0.1', '::1', 'localhost'].include?(ip)
 
-  return false unless ENV['TRUST_PROXY'] == '1'
+  return false unless trusted_proxy_request?
 
   forwarded = request.env['HTTP_X_FORWARDED_FOR'].to_s
   forwarded.split(',').map(&:strip).any? { |part| ['127.0.0.1', '::1', 'localhost'].include?(part) }
+end
+
+def trusted_proxy_request?
+  return false unless ENV['TRUST_PROXY'] == '1'
+
+  remote_ip = request.env['REMOTE_ADDR'].to_s
+  TRUSTED_PROXY_IPS.include?(remote_ip)
 end
 
 def ensure_required_tables!
@@ -317,16 +387,26 @@ def admin_password_hash
 end
 
 def admin_token
-  ENV['ADMIN_TOKEN'].to_s
+  request.env['HTTP_X_ADMIN_TOKEN'].to_s
 end
 
 def admin_authenticated?
   session[:admin_user] == admin_username
 end
 
+def secure_compare?(a, b)
+  return false if a.nil? || b.nil?
+  return false unless a.bytesize == b.bytesize
+
+  Rack::Utils.secure_compare(a, b)
+end
+
 def admin_token_valid?
-  token = request.env['HTTP_X_ADMIN_TOKEN'].to_s
-  !admin_token.empty? && token == admin_token
+  token_hash = ENV['ADMIN_TOKEN_HASH'].to_s
+  return false if token_hash.empty?
+
+  presented_hash = Digest::SHA256.hexdigest(admin_token)
+  secure_compare?(presented_hash, token_hash)
 end
 
 def can_read_dashboard?
@@ -357,6 +437,134 @@ def require_dashboard_control!
 
   content_type :json
   halt 403, json_error('Dashboard control access denied', 403, 'ADMIN_CONTROL_FORBIDDEN')
+end
+
+def same_origin_request?
+  base = "#{request.scheme}://#{request.host_with_port}"
+  origin = request.env['HTTP_ORIGIN'].to_s.strip
+  return origin == base unless origin.empty?
+
+  referer = request.env['HTTP_REFERER'].to_s.strip
+  return referer.start_with?(base) unless referer.empty?
+
+  false
+end
+
+def require_same_origin_for_cookie_session!(api: false)
+  return unless admin_authenticated?
+  return if admin_token_valid?
+  return if same_origin_request?
+
+  if api
+    content_type :json
+    halt 403, json_error('Potential CSRF request blocked', 403, 'CSRF_BLOCKED')
+  else
+    halt 403, 'Forbidden'
+  end
+end
+
+def sanitize_metadata(value, depth = 0)
+  return {} if depth > 4
+
+  case value
+  when Hash
+    value.each_with_object({}) do |(k, v), out|
+      key = k.to_s[0, 64]
+      out[key] = sanitize_metadata(v, depth + 1)
+    end
+  when Array
+    value.first(50).map { |entry| sanitize_metadata(entry, depth + 1) }
+  when String
+    value[0, 256]
+  when Numeric, TrueClass, FalseClass, NilClass
+    value
+  else
+    value.to_s[0, 128]
+  end
+end
+
+def enqueue_admin_job(job_type, payload = {})
+  job_id = SecureRandom.uuid
+  created_at = Time.now.utc.iso8601
+
+  if REDIS_CLIENT && ENABLE_ASYNC_ADMIN_JOBS
+    REDIS_CLIENT.hset("biokey:jobs:#{job_id}", {
+      'job_type' => job_type,
+      'status' => 'queued',
+      'payload' => JSON.generate(sanitize_metadata(payload)),
+      'created_at' => created_at
+    })
+    REDIS_CLIENT.expire("biokey:jobs:#{job_id}", 86400)
+    REDIS_CLIENT.lpush('biokey:jobs:queue', JSON.generate({ job_id: job_id, job_type: job_type, payload: sanitize_metadata(payload), created_at: created_at }))
+  else
+    DB.exec_params(
+      'INSERT INTO async_jobs (id, job_type, status, payload, created_at) VALUES ($1, $2, $3, $4::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, payload = EXCLUDED.payload',
+      [job_id, job_type.to_s, 'queued', sanitize_metadata(payload).to_json]
+    )
+  end
+
+  job_id
+end
+
+def record_async_job_status(job_id, status, payload = {})
+  if REDIS_CLIENT && ENABLE_ASYNC_ADMIN_JOBS
+    REDIS_CLIENT.hset("biokey:jobs:#{job_id}", {
+      'status' => status,
+      'result' => JSON.generate(sanitize_metadata(payload)),
+      'updated_at' => Time.now.utc.iso8601
+    })
+  else
+    DB.exec_params(
+      'UPDATE async_jobs SET status = $2, result = $3::jsonb, updated_at = NOW() WHERE id = $1',
+      [job_id, status.to_s, sanitize_metadata(payload).to_json]
+    )
+  end
+end
+
+def fetch_async_job(job_id)
+  if REDIS_CLIENT && ENABLE_ASYNC_ADMIN_JOBS
+    result = REDIS_CLIENT.hgetall("biokey:jobs:#{job_id}")
+    return nil if result.nil? || result.empty?
+
+    {
+      'id' => job_id,
+      'job_type' => result['job_type'],
+      'status' => result['status'],
+      'payload' => begin
+        raw = result['payload']
+        raw.nil? || raw.empty? ? {} : JSON.parse(raw)
+      rescue
+        {}
+      end,
+      'result' => begin
+        raw = result['result']
+        raw.nil? || raw.empty? ? nil : JSON.parse(raw)
+      rescue
+        nil
+      end,
+      'created_at' => result['created_at'],
+      'updated_at' => result['updated_at']
+    }
+  else
+    row = DB.exec_params('SELECT id, job_type, status, payload, result, created_at, updated_at FROM async_jobs WHERE id = $1 LIMIT 1', [job_id])[0]
+    return nil if row.nil?
+
+    row['payload'] = begin
+      raw = row['payload']
+      raw.nil? || raw.empty? ? {} : JSON.parse(raw)
+    rescue
+      {}
+    end
+
+    row['result'] = begin
+      raw = row['result']
+      raw.nil? || raw.empty? ? nil : JSON.parse(raw)
+    rescue
+      nil
+    end
+
+    row
+  end
 end
 
 def normalize_attempt_label(value)
@@ -393,15 +601,18 @@ def json_error(message, status_code = 500, code = 'ERROR', details = nil)
 end
 
 def log_audit_event(event_type:, actor: 'system', user_id: nil, metadata: {})
+  normalized_event_type = event_type.to_s.strip.upcase.gsub(/[^A-Z0-9_]/, '')[0, 64]
+  normalized_event_type = 'UNKNOWN_EVENT' if normalized_event_type.empty?
+
   DB.exec_params(
     'INSERT INTO audit_events (event_type, actor, user_id, ip_address, request_id, metadata) VALUES ($1, $2, $3, $4, $5, $6::jsonb)',
     [
-      event_type.to_s[0, 64],
+      normalized_event_type,
       actor.to_s[0, 64],
       user_id,
       client_ip,
       current_request_id,
-      metadata.to_json
+      sanitize_metadata(metadata).to_json
     ]
   )
 rescue PG::Error => e
@@ -409,6 +620,12 @@ rescue PG::Error => e
 end
 
 def log_biometric_attempt(user_id:, outcome:, score:, coverage_ratio:, matched_pairs:, timings: nil)
+  safe_coverage = coverage_ratio.to_f
+  safe_coverage = nil unless safe_coverage.finite? && safe_coverage >= 0.0 && safe_coverage <= 1.0
+
+  safe_pairs = matched_pairs.to_i
+  safe_pairs = nil if safe_pairs < 0
+
   payload_hash = begin
     timings.nil? ? nil : Digest::SHA256.hexdigest(timings.to_json)
   rescue
@@ -421,8 +638,8 @@ def log_biometric_attempt(user_id:, outcome:, score:, coverage_ratio:, matched_p
       user_id,
       outcome.to_s[0, 24],
       score,
-      coverage_ratio,
-      matched_pairs,
+      safe_coverage,
+      safe_pairs,
       payload_hash,
       client_ip,
       current_request_id
@@ -447,12 +664,49 @@ def valid_timing_payload?(timings)
   timings.each_with_index do |sample, index|
     normalized = normalize_timing_sample(sample, index)
     return false if normalized.nil?
-    return false if normalized[:pair].strip.empty? || normalized[:pair].length > 16
-    return false if normalized[:dwell] <= 0 || normalized[:flight] <= 0
+    return false unless normalized[:pair].match?(TIMING_KEY_PAIR_REGEX)
+    return false if normalized[:dwell] < 10 || normalized[:flight] < 5
     return false if normalized[:dwell] > 5000 || normalized[:flight] > 5000
   end
 
   true
+end
+
+def parse_positive_int(value)
+  return nil unless value.to_s.match?(/\A\d+\z/)
+
+  parsed = value.to_i
+  parsed > 0 ? parsed : nil
+end
+
+def require_rate_limit!(scope:, key:, limit:, window_seconds:, message:, code:)
+  return unless rate_limited?(scope, key, limit: limit, window_seconds: window_seconds)
+
+  halt 429, json_error(message, 429, code)
+end
+
+def redis_rate_limit_key(scope, key)
+  "biokey:rate_limit:#{scope}:#{key}"
+end
+
+def redis_rate_limited?(scope, key, limit:, window_seconds:)
+  return nil if REDIS_CLIENT.nil?
+
+  now = Time.now.to_i
+  redis_key = redis_rate_limit_key(scope, key)
+
+  REDIS_CLIENT.multi do |multi|
+    multi.zremrangebyscore(redis_key, 0, now - window_seconds)
+    multi.zcard(redis_key)
+    multi.zadd(redis_key, now, "#{now}:#{SecureRandom.hex(4)}")
+    multi.expire(redis_key, window_seconds + 5)
+  end.then do |results|
+    current_count = results[1].to_i
+    current_count >= limit
+  end
+rescue => e
+  $logger.warn "Redis rate limit failed for #{scope}: #{e.message}"
+  nil
 end
 
 def ensure_user_exists(user_id)
@@ -474,7 +728,7 @@ def normalize_timing_sample(sample, index)
     return nil if dwell.nil? || flight.nil?
 
     return {
-      pair: pair.to_s,
+      pair: pair.to_s.strip,
       dwell: dwell.to_f,
       flight: flight.to_f
     }
@@ -506,11 +760,23 @@ def normalized_timing_series(timings)
   end.compact
 end
 
+def payload_hash_verified?(raw_body)
+  expected_hash = request.env['HTTP_X_PAYLOAD_HASH'].to_s.strip
+  require_hash = ENV['REQUIRE_PAYLOAD_HASH'] == 'true'
+
+  return true if expected_hash.empty? && !require_hash
+  return false if expected_hash.empty?
+
+  actual_hash = Digest::SHA256.hexdigest(raw_body.to_s)
+  secure_compare?(actual_hash, expected_hash)
+end
+
 def fetch_profile_rows(user_id)
   result = DB.exec_params(
     "SELECT key_pair, avg_dwell_time, avg_flight_time, std_dev_dwell, std_dev_flight, sample_count
      FROM biometric_profiles
-     WHERE user_id = $1",
+     WHERE user_id = $1
+     LIMIT 500",
     [user_id]
   )
 
@@ -692,11 +958,38 @@ end
 post '/train' do
   content_type :json
   begin
-    data = JSON.parse(request.body.read)
-    user_id = data['user_id']&.to_i
+    session = require_authenticated_api_session!
+    user_id = session['user_id'].to_i
+
+    require_rate_limit!(
+      scope: 'biometric-train-ip',
+      key: client_ip,
+      limit: BIOMETRIC_TRAIN_RATE_LIMIT_MAX,
+      window_seconds: AUTH_RATE_LIMIT_WINDOW_SECONDS,
+      message: 'Too many biometric training attempts. Try again shortly.',
+      code: 'BIOMETRIC_TRAIN_RATE_LIMIT'
+    )
+    require_rate_limit!(
+      scope: 'biometric-train-user',
+      key: user_id,
+      limit: BIOMETRIC_TRAIN_RATE_LIMIT_MAX,
+      window_seconds: AUTH_RATE_LIMIT_WINDOW_SECONDS,
+      message: 'Too many biometric training attempts. Try again shortly.',
+      code: 'BIOMETRIC_TRAIN_RATE_LIMIT'
+    )
+
+    raw_body = request.body.read
+    return json_error('Invalid payload hash', 400, 'PAYLOAD_HASH_MISMATCH') unless payload_hash_verified?(raw_body)
+
+    data = JSON.parse(raw_body)
+    payload_user_id = parse_positive_int(data['user_id'])
     timings = data['timings']
 
-    if user_id.nil? || user_id <= 0 || !valid_timing_payload?(timings)
+    if !payload_user_id.nil? && payload_user_id != user_id
+      return json_error('Authenticated user does not match payload user_id', 403, 'USER_ID_MISMATCH')
+    end
+
+    if !valid_timing_payload?(timings)
        return json_error("Invalid input data", 400)
     end
 
@@ -730,11 +1023,38 @@ end
 post '/login' do
   content_type :json
   begin
-    data = JSON.parse(request.body.read)
-    user_id = data['user_id']&.to_i
+    session = require_authenticated_api_session!
+    user_id = session['user_id'].to_i
+
+    require_rate_limit!(
+      scope: 'biometric-login-ip',
+      key: client_ip,
+      limit: BIOMETRIC_LOGIN_RATE_LIMIT_MAX,
+      window_seconds: AUTH_RATE_LIMIT_WINDOW_SECONDS,
+      message: 'Too many biometric login attempts. Try again shortly.',
+      code: 'BIOMETRIC_LOGIN_RATE_LIMIT'
+    )
+    require_rate_limit!(
+      scope: 'biometric-login-user',
+      key: user_id,
+      limit: BIOMETRIC_LOGIN_RATE_LIMIT_MAX,
+      window_seconds: AUTH_RATE_LIMIT_WINDOW_SECONDS,
+      message: 'Too many biometric login attempts. Try again shortly.',
+      code: 'BIOMETRIC_LOGIN_RATE_LIMIT'
+    )
+
+    raw_body = request.body.read
+    return json_error('Invalid payload hash', 400, 'PAYLOAD_HASH_MISMATCH') unless payload_hash_verified?(raw_body)
+
+    data = JSON.parse(raw_body)
+    payload_user_id = parse_positive_int(data['user_id'])
     timings = data['timings']
-    
-    if user_id.nil? || user_id <= 0 || !valid_timing_payload?(timings)
+
+    if !payload_user_id.nil? && payload_user_id != user_id
+      return json_error('Authenticated user does not match payload user_id', 403, 'USER_ID_MISMATCH')
+    end
+
+    if !valid_timing_payload?(timings)
       return json_error("Missing user_id or timings", 400)
     end
 
@@ -806,13 +1126,7 @@ rescue PG::Error => e
 end
 
 def hash_password(password)
-  pepper = ENV['APP_AUTH_PEPPER'] || 'biokey_dev_pepper'
-  BCrypt::Password.create("#{pepper}:#{password}").to_s
-end
-
-def legacy_hash_password(password)
-  salt = ENV['APP_AUTH_SALT'] || 'biokey_dev_salt'
-  Digest::SHA256.hexdigest("#{salt}:#{password}")
+  BCrypt::Password.create("#{APP_AUTH_PEPPER}:#{password}").to_s
 end
 
 def bcrypt_hash?(value)
@@ -821,13 +1135,9 @@ end
 
 def password_matches?(password, stored_hash)
   return false if stored_hash.nil? || stored_hash.empty?
+  return false unless bcrypt_hash?(stored_hash)
 
-  if bcrypt_hash?(stored_hash)
-    pepper = ENV['APP_AUTH_PEPPER'] || 'biokey_dev_pepper'
-    BCrypt::Password.new(stored_hash) == "#{pepper}:#{password}"
-  else
-    legacy_hash_password(password) == stored_hash
-  end
+  BCrypt::Password.new(stored_hash) == "#{APP_AUTH_PEPPER}:#{password}"
 rescue BCrypt::Errors::InvalidHash
   false
 end
@@ -840,12 +1150,10 @@ def revoke_user_sessions(user_id, except_token = nil)
   if except_token.nil?
     DB.exec_params('DELETE FROM user_sessions WHERE user_id = $1', [user_id])
   else
-    candidates = session_token_candidates(except_token)
-    keep_a = candidates[0] || ''
-    keep_b = candidates[1] || keep_a
+    keep_digest = session_token_digest(except_token)
     DB.exec_params(
-      'DELETE FROM user_sessions WHERE user_id = $1 AND session_token <> $2 AND session_token <> $3',
-      [user_id, keep_a, keep_b]
+      'DELETE FROM user_sessions WHERE user_id = $1 AND session_token <> $2',
+      [user_id, keep_digest]
     )
   end
 end
@@ -861,9 +1169,8 @@ def session_token_digest(token)
 end
 
 def session_token_candidates(token)
-  return [] if token.nil? || token.empty?
-
-  [session_token_digest(token), token].compact.uniq
+  digest = session_token_digest(token)
+  digest.nil? ? [] : [digest]
 end
 
 def bearer_token
@@ -876,16 +1183,16 @@ end
 def active_session_for(token)
   return nil if token.nil? || token.empty?
 
-  candidates = session_token_candidates(token)
-  return nil if candidates.empty?
+  token_digest = session_token_digest(token)
+  return nil if token_digest.nil?
 
   result = DB.exec_params(
     "SELECT s.user_id, u.username
      FROM user_sessions s
      JOIN users u ON u.id = s.user_id
-     WHERE (s.session_token = $1 OR s.session_token = $2) AND s.expires_at > NOW()
+     WHERE s.session_token = $1 AND s.expires_at > NOW()
      LIMIT 1",
-    [candidates[0], candidates[1] || candidates[0]]
+    [token_digest]
   )
 
   return nil if result.ntuples == 0
@@ -1008,11 +1315,8 @@ post '/auth/login' do
     user_id = result[0]['id'].to_i
     stored_hash = result[0]['password_hash']
 
-    if !bcrypt_hash?(stored_hash)
-      DB.exec_params(
-        'UPDATE users SET password_hash = $1 WHERE id = $2',
-        [hash_password(password), user_id]
-      )
+    unless bcrypt_hash?(stored_hash)
+      return json_error('Password reset required before login', 403, 'PASSWORD_UPGRADE_REQUIRED')
     end
 
     cleanup_expired_sessions
@@ -1021,7 +1325,7 @@ post '/auth/login' do
     clear_login_failures(username, ip_address)
 
     token = generate_session_token
-    expires_at = (Time.now + 24 * 60 * 60).utc
+    expires_at = (Time.now + SESSION_DURATION_HOURS * 60 * 60).utc
 
     DB.exec_params(
       'INSERT INTO user_sessions (user_id, session_token, expires_at) VALUES ($1, $2, $3)',
@@ -1110,6 +1414,117 @@ get '/auth/profile' do
   end
 end
 
+get '/auth/export-data' do
+  content_type :json
+  begin
+    session = active_session_for(bearer_token)
+    return json_error('Unauthorized', 401) if session.nil?
+
+    user_id = session['user_id'].to_i
+
+    profile_rows = DB.exec_params(
+      'SELECT key_pair, avg_dwell_time, avg_flight_time, std_dev_dwell, std_dev_flight, sample_count FROM biometric_profiles WHERE user_id = $1 ORDER BY key_pair LIMIT 500',
+      [user_id]
+    ).map(&:to_h)
+
+    score_rows = DB.exec_params(
+      'SELECT score, outcome, coverage_ratio, matched_pairs, created_at FROM user_score_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 500',
+      [user_id]
+    ).map(&:to_h)
+
+    attempt_rows = DB.exec_params(
+      'SELECT outcome, score, coverage_ratio, matched_pairs, created_at FROM biometric_attempts WHERE user_id = $1 ORDER BY created_at DESC LIMIT 500',
+      [user_id]
+    ).map(&:to_h)
+
+    consent_events = DB.exec_params(
+      "SELECT event_type, metadata, created_at FROM audit_events WHERE user_id = $1 AND event_type = 'CONSENT_BIOMETRIC' ORDER BY created_at DESC LIMIT 50",
+      [user_id]
+    ).map(&:to_h)
+
+    log_audit_event(event_type: 'USER_EXPORT_DATA', actor: 'user', user_id: user_id, metadata: { rows: { profiles: profile_rows.length, scores: score_rows.length, attempts: attempt_rows.length } })
+
+    json_success({
+      status: 'SUCCESS',
+      user: {
+        id: user_id,
+        username: session['username']
+      },
+      export_generated_at: Time.now.utc.iso8601,
+      biometric_profiles: profile_rows,
+      score_history: score_rows,
+      biometric_attempts: attempt_rows,
+      consent_events: consent_events
+    })
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/export-data: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/export-data: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
+post '/auth/consent' do
+  content_type :json
+  begin
+    session = active_session_for(bearer_token)
+    return json_error('Unauthorized', 401) if session.nil?
+
+    payload = JSON.parse(request.body.read)
+    consent = payload['consent_biometric']
+    return json_error('consent_biometric must be boolean', 400, 'INVALID_CONSENT') unless consent == true || consent == false
+
+    log_audit_event(
+      event_type: 'CONSENT_BIOMETRIC',
+      actor: 'user',
+      user_id: session['user_id'].to_i,
+      metadata: {
+        consent_biometric: consent,
+        policy_version: payload['policy_version'].to_s.strip[0, 64],
+        source: payload['source'].to_s.strip[0, 64],
+        accepted_at: Time.now.utc.iso8601
+      }
+    )
+
+    json_success({ status: 'SUCCESS', consent_biometric: consent })
+  rescue JSON::ParserError
+    json_error('Invalid JSON format', 400)
+  rescue => e
+    $logger.error "Unknown error in /auth/consent: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
+post '/auth/delete-account' do
+  content_type :json
+  begin
+    session = active_session_for(bearer_token)
+    return json_error('Unauthorized', 401) if session.nil?
+
+    user_id = session['user_id'].to_i
+
+    DB.transaction do |tx|
+      tx.exec_params('DELETE FROM biometric_profiles WHERE user_id = $1', [user_id])
+      tx.exec_params('DELETE FROM user_score_history WHERE user_id = $1', [user_id])
+      tx.exec_params('DELETE FROM user_score_thresholds WHERE user_id = $1', [user_id])
+      tx.exec_params('DELETE FROM biometric_attempts WHERE user_id = $1', [user_id])
+      tx.exec_params('DELETE FROM access_logs WHERE user_id = $1', [user_id])
+      tx.exec_params('DELETE FROM user_sessions WHERE user_id = $1', [user_id])
+      tx.exec_params('DELETE FROM users WHERE id = $1', [user_id])
+    end
+
+    log_audit_event(event_type: 'USER_DELETE_ACCOUNT', actor: 'user', user_id: user_id)
+    json_success({ status: 'SUCCESS', message: 'Account and biometric data deleted' })
+  rescue PG::Error => e
+    $logger.error "Database error in /auth/delete-account: #{e.message}"
+    json_error('Database error')
+  rescue => e
+    $logger.error "Unknown error in /auth/delete-account: #{e.message}"
+    json_error('Internal Server Error')
+  end
+end
+
 post '/auth/logout' do
   content_type :json
   begin
@@ -1120,10 +1535,10 @@ post '/auth/logout' do
     end
 
     session = active_session_for(token)
-    candidates = session_token_candidates(token)
+    token_digest = session_token_digest(token)
     DB.exec_params(
-      'DELETE FROM user_sessions WHERE session_token = $1 OR session_token = $2',
-      [candidates[0], candidates[1] || candidates[0]]
+      'DELETE FROM user_sessions WHERE session_token = $1',
+      [token_digest]
     )
     log_access_event(user_id: session.nil? ? nil : session['user_id'].to_i, verdict: 'LOGOUT', score: nil)
     json_success({ status: 'SUCCESS', message: 'Logged out' })
@@ -1157,12 +1572,12 @@ post '/auth/refresh' do
     revoke_user_sessions(session['user_id'].to_i, token)
 
     new_token = generate_session_token
-    new_expires_at = (Time.now + 24 * 60 * 60).utc
+    new_expires_at = (Time.now + SESSION_DURATION_HOURS * 60 * 60).utc
 
-    old_candidates = session_token_candidates(token)
+    old_digest = session_token_digest(token)
     updated = DB.exec_params(
-      'UPDATE user_sessions SET session_token = $1, expires_at = $2 WHERE session_token = $3 OR session_token = $4',
-      [session_token_digest(new_token), new_expires_at, old_candidates[0], old_candidates[1] || old_candidates[0]]
+      'UPDATE user_sessions SET session_token = $1, expires_at = $2 WHERE session_token = $3',
+      [session_token_digest(new_token), new_expires_at, old_digest]
     )
 
     if updated.cmd_tuples == 0
@@ -1254,7 +1669,7 @@ post '/prototype/api/typing-events' do
       cursor_pos = event['cursor_pos']
       client_ts_ms = event['client_ts_ms']
 
-      next if event_type.empty? || event_type.length > 24
+      next unless TYPING_EVENT_TYPE_ALLOWLIST.include?(event_type)
 
       tx.exec_params(
         "INSERT INTO typing_capture_events (
@@ -1281,7 +1696,7 @@ post '/prototype/api/typing-events' do
           client_ts_ms,
           client_ip,
           current_request_id,
-          (event['metadata'].is_a?(Hash) ? event['metadata'] : {}).to_json
+          sanitize_metadata(event['metadata'].is_a?(Hash) ? event['metadata'] : {}).to_json
         ]
       )
 
@@ -1304,12 +1719,20 @@ end
 
 def client_ip
   forwarded = request.env['HTTP_X_FORWARDED_FOR']
-  return forwarded.split(',').first.strip unless forwarded.nil? || forwarded.strip.empty?
+  if trusted_proxy_request? && !forwarded.nil? && !forwarded.strip.empty?
+    return forwarded.split(',').first.strip
+  end
+
+  remote_addr = request.env['REMOTE_ADDR'].to_s
+  return remote_addr unless remote_addr.empty?
 
   request.ip.to_s
 end
 
 def rate_limited?(scope, key, limit:, window_seconds:)
+  redis_result = redis_rate_limited?(scope, key, limit: limit, window_seconds: window_seconds)
+  return redis_result unless redis_result.nil?
+
   now = Time.now.to_i
   bucket_key = "#{scope}:#{key}"
 
@@ -1402,6 +1825,7 @@ post '/admin/login' do
 end
 
 post '/admin/logout' do
+  require_same_origin_for_cookie_session!
   actor = session[:admin_user] || 'unknown'
   session.delete(:admin_user)
   log_audit_event(event_type: 'ADMIN_LOGOUT', actor: actor)
@@ -1427,7 +1851,7 @@ get '/admin/api/feed' do
   require_dashboard_read!
 
   limit = params['limit']&.to_i || 50
-  limit = 200 if limit > 200
+  limit = 50 if limit > 50
   limit = 1 if limit < 1
 
   with_dashboard_service do |service|
@@ -1440,7 +1864,7 @@ get '/admin/api/live-feed' do
   require_dashboard_read!
 
   limit = params['limit']&.to_i || 50
-  limit = 200 if limit > 200
+  limit = 50 if limit > 50
   limit = 1 if limit < 1
 
   with_dashboard_service do |service|
@@ -1453,7 +1877,7 @@ get '/admin/api/auth-feed' do
   require_dashboard_read!
 
   limit = params['limit']&.to_i || 50
-  limit = 200 if limit > 200
+  limit = 50 if limit > 50
   limit = 1 if limit < 1
 
   with_dashboard_service do |service|
@@ -1466,15 +1890,15 @@ get '/admin/api/typing-capture' do
   require_dashboard_read!
 
   limit = params['limit']&.to_i || 200
-  limit = 1000 if limit > 1000
+  limit = 500 if limit > 500
   limit = 1 if limit < 1
 
   clauses = []
   binds = []
 
   if params['user_id'] && !params['user_id'].to_s.strip.empty?
-    user_id = params['user_id'].to_i
-    return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+    user_id = parse_positive_int(params['user_id'])
+    return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id.nil?
     binds << user_id
     clauses << "e.user_id = $#{binds.length}"
   end
@@ -1542,9 +1966,18 @@ end
 post '/admin/api/attempt/:id/label' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
 
-  attempt_id = params['id'].to_i
-  return json_error('Invalid attempt id', 400, 'INVALID_ATTEMPT') if attempt_id <= 0
+  attempt_id = parse_positive_int(params['id'])
+  return json_error('Invalid attempt id', 400, 'INVALID_ATTEMPT') if attempt_id.nil?
 
   payload_raw = request.body.read
   payload = payload_raw.nil? || payload_raw.strip.empty? ? {} : JSON.parse(payload_raw)
@@ -1568,6 +2001,15 @@ end
 post '/admin/api/attempts/label-bulk' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
 
   payload_raw = request.body.read
   payload = payload_raw.nil? || payload_raw.strip.empty? ? {} : JSON.parse(payload_raw)
@@ -1578,8 +2020,8 @@ post '/admin/api/attempts/label-bulk' do
   params = []
 
   if payload.key?('user_id') && !payload['user_id'].to_s.strip.empty?
-    user_id = payload['user_id'].to_i
-    return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+    user_id = parse_positive_int(payload['user_id'])
+    return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id.nil?
     params << user_id
     clauses << "user_id = $#{params.length}"
   end
@@ -1636,8 +2078,8 @@ get '/admin/api/user/:user_id' do
   content_type :json
   require_dashboard_read!
 
-  user_id = params['user_id'].to_i
-  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+  user_id = parse_positive_int(params['user_id'])
+  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id.nil?
 
   with_dashboard_service do |service|
     json_success(service.user_detail(user_id))
@@ -1647,9 +2089,18 @@ end
 post '/admin/api/recalibrate/:user_id' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
 
-  user_id = params['user_id'].to_i
-  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+  user_id = parse_positive_int(params['user_id'])
+  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id.nil?
 
   thresholds = AuthService.calibrated_thresholds_for_user(user_id)
   log_audit_event(
@@ -1665,9 +2116,18 @@ end
 post '/admin/api/reset-user/:user_id' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
 
-  user_id = params['user_id'].to_i
-  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id <= 0
+  user_id = parse_positive_int(params['user_id'])
+  return json_error('Invalid user_id', 400, 'INVALID_USER') if user_id.nil?
 
   profile_deleted = DB.exec_params('DELETE FROM biometric_profiles WHERE user_id = $1', [user_id]).cmd_tuples
   history_deleted = DB.exec_params('DELETE FROM user_score_history WHERE user_id = $1', [user_id]).cmd_tuples
@@ -1696,9 +2156,32 @@ end
 post '/admin/api/export-dataset' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
 
   body_data = request.body.read
   payload = body_data.nil? || body_data.strip.empty? ? {} : JSON.parse(body_data)
+
+  if ENABLE_ASYNC_ADMIN_JOBS
+    job_id = enqueue_admin_job('EXPORT_DATASET', {
+      requested_by: session[:admin_user] || 'token-admin',
+      format: payload['format'],
+      user_id: payload['user_id'],
+      from_time: payload['from_time'],
+      to_time: payload['to_time'],
+      outcome: payload['outcome']
+    })
+
+    log_audit_event(event_type: 'EXPORT_DATASET_QUEUED', actor: session[:admin_user] || 'token-admin', metadata: { job_id: job_id })
+    return json_success({ status: 'QUEUED', job_id: job_id }, 202)
+  end
 
   format = payload['format'].to_s.downcase
   format = 'json' unless ['json', 'csv'].include?(format)
@@ -1731,6 +2214,21 @@ end
 post '/admin/api/run-evaluation' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
+
+  if ENABLE_ASYNC_ADMIN_JOBS
+    job_id = enqueue_admin_job('RUN_EVALUATION', { requested_by: session[:admin_user] || 'token-admin' })
+    log_audit_event(event_type: 'RUN_EVALUATION_QUEUED', actor: session[:admin_user] || 'token-admin', metadata: { job_id: job_id })
+    return json_success({ status: 'QUEUED', job_id: job_id }, 202)
+  end
 
   service = EvaluationService.new(db: DB)
   report = service.evaluate_and_write
@@ -1744,9 +2242,31 @@ post '/admin/api/run-evaluation' do
   json_success({ status: 'SUCCESS', evaluation: report })
 end
 
+get '/admin/api/jobs/:job_id' do
+  content_type :json
+  require_dashboard_read!
+
+  job_id = params['job_id'].to_s.strip
+  return json_error('Invalid job_id', 400, 'INVALID_JOB') if job_id.empty?
+
+  job = fetch_async_job(job_id)
+  return json_error('Job not found', 404, 'JOB_NOT_FOUND') if job.nil?
+
+  json_success({ status: 'SUCCESS', job: job })
+end
+
 post '/admin/api/cleanup-sessions' do
   content_type :json
   require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
 
   deleted = DB.exec('DELETE FROM user_sessions WHERE expires_at <= NOW()').cmd_tuples
   log_audit_event(
@@ -1756,4 +2276,64 @@ post '/admin/api/cleanup-sessions' do
   )
 
   json_success({ status: 'SUCCESS', deleted_sessions: deleted })
+end
+
+post '/admin/api/apply-retention' do
+  content_type :json
+  require_dashboard_control!
+  require_same_origin_for_cookie_session!(api: true)
+  require_rate_limit!(
+    scope: 'admin-api',
+    key: client_ip,
+    limit: ADMIN_API_RATE_LIMIT_MAX,
+    window_seconds: ADMIN_API_RATE_LIMIT_WINDOW_SECONDS,
+    message: 'Too many admin requests. Try again shortly.',
+    code: 'ADMIN_RATE_LIMIT'
+  )
+
+  retention_days = ENV.fetch('DATA_RETENTION_DAYS', '365').to_i
+  retention_days = 30 if retention_days < 30
+
+  deleted_attempts = DB.exec_params(
+    "DELETE FROM biometric_attempts WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+    [retention_days]
+  ).cmd_tuples
+
+  deleted_access_logs = DB.exec_params(
+    "DELETE FROM access_logs WHERE attempted_at < NOW() - ($1::int * INTERVAL '1 day')",
+    [retention_days]
+  ).cmd_tuples
+
+  deleted_scores = DB.exec_params(
+    "DELETE FROM user_score_history WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+    [retention_days]
+  ).cmd_tuples
+
+  log_audit_event(
+    event_type: 'APPLY_RETENTION',
+    actor: session[:admin_user] || 'token-admin',
+    metadata: {
+      retention_days: retention_days,
+      deleted_attempts: deleted_attempts,
+      deleted_access_logs: deleted_access_logs,
+      deleted_scores: deleted_scores
+    }
+  )
+
+  json_success({
+    status: 'SUCCESS',
+    retention_days: retention_days,
+    deleted_attempts: deleted_attempts,
+    deleted_access_logs: deleted_access_logs,
+    deleted_scores: deleted_scores
+  })
+end
+
+get '/health' do
+  content_type :json
+  json_success({ status: 'ok' })
+end
+
+options '*' do
+  status 204
 end

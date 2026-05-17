@@ -33,6 +33,9 @@ BioKey is a keystroke-dynamics biometric authentication prototype with:
 cd backend-server
 bundle install
 ruby db/migrate.rb
+set APP_SESSION_SECRET=replace_with_min_32_char_secret
+set SESSION_TOKEN_PEPPER=replace_with_min_32_char_secret
+set APP_AUTH_PEPPER=replace_with_min_16_char_secret
 ruby app.rb
 ```
 
@@ -58,10 +61,10 @@ run_local.bat
 Health check:
 
 ```text
-GET http://127.0.0.1:4567/login
+GET http://127.0.0.1:4567/health
 ```
 
-Expected response: `Hello World`
+Expected response: JSON status `ok`
 
 ## API Overview
 
@@ -71,6 +74,9 @@ Expected response: `Hello World`
 - `POST /v1/auth/login`
 - `POST /v1/auth/intelligence`
 - `GET /v1/auth/profile`
+- `GET /v1/auth/export-data`
+- `POST /v1/auth/consent`
+- `POST /v1/auth/delete-account`
 - `POST /v1/auth/refresh`
 - `POST /v1/auth/logout`
 - `POST /v1/train`
@@ -94,6 +100,8 @@ Expected response: `Hello World`
 - `POST /admin/api/attempts/label-bulk`
 - `POST /admin/api/export-dataset`
 - `POST /admin/api/run-evaluation`
+- `POST /admin/api/apply-retention`
+- `GET /admin/api/jobs/:job_id`
 
 Responses include:
 
@@ -210,8 +218,10 @@ On push/PR to `main`:
 - Dashboard read access is allowed on localhost.
 - Dashboard control actions require admin session or `X-Admin-Token`.
 - Proxy trust is gated by `TRUST_PROXY=1`.
+- Required runtime secrets: `APP_SESSION_SECRET`, `SESSION_TOKEN_PEPPER`, `APP_AUTH_PEPPER`.
 - FAR/FRR report quality depends on labeled attempts (`GENUINE` / `IMPOSTER`).
 - Session tokens are stored as SHA-256 digests at rest (token hashing with pepper).
+- With `REDIS_URL` set, rate limiting and admin async jobs are coordinated across processes.
 
 ## Prototype Notice
 

@@ -12,6 +12,7 @@ gem 'rackup', '~> 2.3'
 gem 'json', '~> 2.6'
 gem 'csv', '~> 3.2'
 gem 'pg', '~> 1.5', require: 'pg'
+gem 'redis', '~> 5.2'
 
 # Security & Authentication
 gem 'bcrypt', '~> 3.1'

@@ -34,6 +34,8 @@
    - StructuredLogger (JSON logging, correlation)   
    - ConnectionPool (DB connection management)       
    - ResilientDb (automatic retry & recovery)       
+  - Redis-backed rate limiting when REDIS_URL is set
+  - Async admin job queue for exports/evaluations
      
      
    Admin Dashboard & Evaluation                       
@@ -60,6 +62,7 @@
    - admin_actions (privilege operations)            
    - active_sessions (token management)              
    - user_roles (RBAC)                               
+  - async_jobs (queued admin work metadata)          
      
      
    Performance Optimizations:                         

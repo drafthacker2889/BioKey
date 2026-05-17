@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.biokey.client.BuildConfig
 import com.biokey.client.data.ApiErrorMapper
 import com.biokey.client.data.BioKeyApiClient
 import com.biokey.client.model.AppScreen
@@ -42,7 +43,7 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
     val events: SharedFlow<String> = _events.asSharedFlow()
 
     private fun defaultServerUrl(): String {
-        return "http://10.179.196.210:4567"
+        return BuildConfig.BIOKEY_BASE_URL
     }
 
     private fun savedToken(): String = prefs.getString("auth_token", "") ?: ""
@@ -76,6 +77,10 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
     fun doTrain() {
         val state = _uiState.value
         val parsedUserId = state.userId.toIntOrNull()
+        if (state.authToken.isBlank()) {
+            _uiState.update { it.copy(resultText = "Login required before biometric training") }
+            return
+        }
         if (parsedUserId == null || state.capturedTimings.isEmpty()) {
             _uiState.update { it.copy(resultText = "Use numeric User ID and type at least 2 letters/numbers") }
             return
@@ -92,6 +97,10 @@ class BioKeyViewModel(application: Application) : AndroidViewModel(application) 
     fun doBiometricLogin() {
         val state = _uiState.value
         val parsedUserId = state.userId.toIntOrNull()
+        if (state.authToken.isBlank()) {
+            _uiState.update { it.copy(resultText = "Account login required before biometric verification") }
+            return
+        }
         if (parsedUserId == null || state.capturedTimings.isEmpty()) {
             _uiState.update { it.copy(resultText = "Use numeric User ID and type at least 2 letters/numbers") }
             return

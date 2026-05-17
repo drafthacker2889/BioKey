@@ -1,13 +1,38 @@
 version: '3.9'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: biokey-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   postgres:
     image: postgres:15-alpine
     container_name: biokey-postgres
     environment:
       POSTGRES_DB: biokey_db
       POSTGRES_USER: biokey
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me_in_production}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
@@ -20,7 +45,16 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - biokey-network
+      - data-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.00'
+          memory: 1G
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   backend:
     build:
@@ -30,32 +64,91 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DB_NAME: biokey_db
       DB_USER: biokey
-      DB_PASSWORD: ${DB_PASSWORD:-change_me_in_production}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_POOL_SIZE: 10
+      REDIS_URL: redis://redis:6379/0
+      ENABLE_ASYNC_ADMIN_JOBS: "true"
       
       API_PORT: 4567
       API_BIND: 0.0.0.0
       APP_ENV: ${APP_ENV:-production}
-      APP_SESSION_SECRET: ${APP_SESSION_SECRET:-change_me_min_32_chars}
+      APP_REQUIRE_HTTPS: "true"
+      TRUST_PROXY: "1"
       
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json
+    command: >
+      sh -c 'export DB_PASSWORD="$(cat /run/secrets/db_password)";
+      export APP_SESSION_SECRET="$(cat /run/secrets/app_session_secret)";
+      export SESSION_TOKEN_PEPPER="$(cat /run/secrets/session_token_pepper)";
+      export APP_AUTH_PEPPER="$(cat /run/secrets/app_auth_pepper)";
+      exec bundle exec ruby app.rb'
+    secrets:
+      - db_password
+      - app_session_secret
+      - session_token_pepper
+      - app_auth_pepper
     ports:
       - "4567:4567"
-    volumes:
-      - ./backend-server:/app
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4567/login"]
+      test: ["CMD", "curl", "-f", "http://localhost:4567/health"]
       interval: 30s
       timeout: 10s
       retries: 3
     networks:
-      - biokey-network
+      - backend-network
+      - data-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.00'
+          memory: 1G
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  backend-worker:
+    build:
+      context: ./backend-server
+      dockerfile: Dockerfile
+    container_name: biokey-backend-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_NAME: biokey_db
+      DB_USER: biokey
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      ENABLE_ASYNC_ADMIN_JOBS: "true"
+      APP_ENV: ${APP_ENV:-production}
+    command: >
+      sh -c 'export DB_PASSWORD="$(cat /run/secrets/db_password)";
+      exec bundle exec ruby worker.rb'
+    secrets:
+      - db_password
+    networks:
+      - data-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.00'
+          memory: 1G
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   # Optional: pgAdmin for database management
@@ -64,19 +157,34 @@ services:
     container_name: biokey-pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@biokey.local
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD?PGADMIN_PASSWORD is required for pgadmin profile}
     ports:
       - "5050:80"
     depends_on:
       - postgres
     networks:
-      - biokey-network
+      - backend-network
     profiles: ["dev"]  # Only run with: docker-compose --profile dev up
 
 volumes:
   postgres_data:
     driver: local
+  redis_data:
+    driver: local
+
+secrets:
+  db_password:
+    file: ./.secrets/db_password.txt
+  app_session_secret:
+    file: ./.secrets/app_session_secret.txt
+  session_token_pepper:
+    file: ./.secrets/session_token_pepper.txt
+  app_auth_pepper:
+    file: ./.secrets/app_auth_pepper.txt
 
 networks:
-  biokey-network:
+  backend-network:
     driver: bridge
+  data-network:
+    driver: bridge
+    internal: true
