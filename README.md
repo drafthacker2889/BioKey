@@ -66,6 +66,20 @@ GET http://127.0.0.1:4567/health
 
 Expected response: JSON status `ok`
 
+Readiness check:
+
+```text
+GET http://127.0.0.1:4567/ready
+```
+
+Expected response: JSON status `ready` when DB/schema (and Redis, if configured) are healthy.
+
+Metrics endpoint (localhost/admin protected):
+
+```text
+GET http://127.0.0.1:4567/metrics
+```
+
 ## API Overview
 
 ### Auth + Biometric (v1)
@@ -219,9 +233,25 @@ On push/PR to `main`:
 - Dashboard control actions require admin session or `X-Admin-Token`.
 - Proxy trust is gated by `TRUST_PROXY=1`.
 - Required runtime secrets: `APP_SESSION_SECRET`, `SESSION_TOKEN_PEPPER`, `APP_AUTH_PEPPER`.
+- Production control token hash: `ADMIN_TOKEN_HASH` (lowercase SHA-256 hex digest).
 - FAR/FRR report quality depends on labeled attempts (`GENUINE` / `IMPOSTER`).
 - Session tokens are stored as SHA-256 digests at rest (token hashing with pepper).
 - With `REDIS_URL` set, rate limiting and admin async jobs are coordinated across processes.
+
+## Performance Gate
+
+CI includes a lightweight backend performance gate script:
+
+```bash
+cd backend-server
+ruby tools/perf_smoke_gate.rb
+```
+
+Supported environment knobs:
+
+- `PERF_GATE_URL` (default `http://127.0.0.1:4567/health`)
+- `PERF_GATE_REQUESTS` (default `30`)
+- `PERF_GATE_P95_MS` (default `350`)
 
 ## Prototype Notice
 

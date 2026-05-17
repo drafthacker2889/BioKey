@@ -79,6 +79,7 @@ services:
       API_BIND: 0.0.0.0
       APP_ENV: ${APP_ENV:-production}
       APP_REQUIRE_HTTPS: "true"
+      REQUIRE_ADMIN_TOKEN_HASH: "true"
       TRUST_PROXY: "1"
       
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -88,16 +89,18 @@ services:
       export APP_SESSION_SECRET="$(cat /run/secrets/app_session_secret)";
       export SESSION_TOKEN_PEPPER="$(cat /run/secrets/session_token_pepper)";
       export APP_AUTH_PEPPER="$(cat /run/secrets/app_auth_pepper)";
+      export ADMIN_TOKEN_HASH="$(cat /run/secrets/admin_token_hash)";
       exec bundle exec ruby app.rb'
     secrets:
       - db_password
       - app_session_secret
       - session_token_pepper
       - app_auth_pepper
+      - admin_token_hash
     ports:
       - "4567:4567"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4567/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4567/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -181,6 +184,8 @@ secrets:
     file: ./.secrets/session_token_pepper.txt
   app_auth_pepper:
     file: ./.secrets/app_auth_pepper.txt
+  admin_token_hash:
+    file: ./.secrets/admin_token_hash.txt
 
 networks:
   backend-network:

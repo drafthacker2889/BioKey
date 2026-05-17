@@ -66,6 +66,26 @@ jobs:
           bundle exec ruby -Itest test/evaluation_service_test.rb
           bundle exec ruby -Itest test/integration_api_test.rb
 
+      - name: Readiness and performance gate
+        env:
+          ADMIN_TOKEN_HASH: 3155b165e9b9b9fe6602b25e139a285bfea090df9b7edbcc08c5f7d224f25438
+          REQUIRE_ADMIN_TOKEN_HASH: "false"
+          PERF_GATE_URL: http://127.0.0.1:4567/health
+          PERF_GATE_REQUESTS: "30"
+          PERF_GATE_P95_MS: "500"
+        run: |
+          bundle exec ruby app.rb > /tmp/biokey_app.log 2>&1 &
+          APP_PID=$!
+          trap 'kill $APP_PID >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4567/ready >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4567/ready
+          bundle exec ruby tools/perf_smoke_gate.rb
+
       - name: Install security scanners
         run: |
           gem install brakeman bundler-audit

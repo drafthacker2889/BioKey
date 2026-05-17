@@ -133,4 +133,4 @@ jobs:
       working-directory: backend-server
       run: |
         gem install brakeman
-        brakeman --skip-files lib/structured_logger.rb || true
+        brakeman --force --skip-files lib/structured_logger.rb

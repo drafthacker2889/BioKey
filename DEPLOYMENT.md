@@ -129,6 +129,8 @@ API_BIND=0.0.0.0
 APP_ENV=production
 APP_SESSION_SECRET=<generate_with_SecureRandom.hex(32)>
 APP_REQUIRE_HTTPS=true
+REQUIRE_ADMIN_TOKEN_HASH=true
+ADMIN_TOKEN_HASH=<sha256_of_strong_admin_token>
 REDIS_URL=redis://redis:6379/0
 ENABLE_ASYNC_ADMIN_JOBS=true
 DATA_RETENTION_DAYS=365
@@ -227,6 +229,12 @@ Example:
 # Backend health
 curl -f http://localhost:4567/health
 
+# Backend readiness (DB/schema and Redis if configured)
+curl -f http://localhost:4567/ready
+
+# Backend metrics (localhost or admin auth)
+curl -f http://localhost:4567/metrics
+
 # Database health (from container)
 docker-compose -f docker-compose.prod.yml exec postgres \
   pg_isready -U biokey
@@ -246,6 +254,8 @@ Monitor key metrics:
 - `database_query_time` - Log slow queries (>1s)
 - `connection_pool_usage` - Monitor pool exhaustion
 - `rate_limit_hits` - Track rate limiting incidents
+
+CI also runs a release smoke/performance gate on backend changes using `backend-server/tools/perf_smoke_gate.rb`.
 
 ---
 

@@ -44,8 +44,6 @@ end
 
 set :bind, '0.0.0.0'
 set :port, 4567
-set :sessions, true
-set :session_secret, required_env!('APP_SESSION_SECRET', min_length: 32)
 use ApiVersionMiddleware
 
 # Configure logging
@@ -60,6 +58,7 @@ APP_BOOT_TIME = Time.now
 APP_ENV = ENV.fetch('APP_ENV', ENV.fetch('RACK_ENV', 'development'))
 APP_REQUIRE_HTTPS = ENV['APP_REQUIRE_HTTPS'] == 'true'
 ENABLE_ADVANCED_INTELLIGENCE = ENV.fetch('ENABLE_ADVANCED_INTELLIGENCE', 'true') == 'true'
+APP_SESSION_SECRET = required_env!('APP_SESSION_SECRET', min_length: 32)
 SESSION_TOKEN_PEPPER = required_env!('SESSION_TOKEN_PEPPER', min_length: 32)
 APP_AUTH_PEPPER = required_env!('APP_AUTH_PEPPER', min_length: 16)
 SESSION_DURATION_HOURS = ENV.fetch('SESSION_DURATION_HOURS', '4').to_i.clamp(1, 12)
@@ -73,13 +72,49 @@ TIMING_KEY_PAIR_REGEX = /\A[a-zA-Z0-9:_-]{1,16}\z/
 TYPING_EVENT_TYPE_ALLOWLIST = %w[KEYDOWN KEYUP INPUT BACKSPACE DELETE PASTE CUT FOCUS BLUR SUBMIT COMPOSITIONSTART COMPOSITIONEND].freeze
 REDIS_URL = ENV['REDIS_URL'].to_s.strip
 ENABLE_ASYNC_ADMIN_JOBS = ENV.fetch('ENABLE_ASYNC_ADMIN_JOBS', 'true') == 'true'
+REQUIRE_ADMIN_TOKEN_HASH = ENV.fetch('REQUIRE_ADMIN_TOKEN_HASH', APP_ENV == 'production' ? 'true' : 'false') == 'true'
+DATA_RETENTION_DAYS = ENV.fetch('DATA_RETENTION_DAYS', '365').to_i.clamp(30, 3650)
+
+set :sessions,
+    key: 'biokey.session',
+    httponly: true,
+    secure: APP_REQUIRE_HTTPS,
+    same_site: :lax,
+    expire_after: SESSION_DURATION_HOURS * 3600,
+    secret: APP_SESSION_SECRET
 
 if APP_ENV == 'production' && !APP_REQUIRE_HTTPS
   abort('APP_REQUIRE_HTTPS=true is required in production')
 end
 
+if REQUIRE_ADMIN_TOKEN_HASH && !ENV['ADMIN_TOKEN_HASH'].to_s.match?(/\A[0-9a-f]{64}\z/)
+  abort('ADMIN_TOKEN_HASH must be a lowercase SHA-256 hex digest when REQUIRE_ADMIN_TOKEN_HASH=true')
+end
+
 RATE_LIMIT_MUTEX = Mutex.new
 RATE_LIMIT_BUCKETS = {}
+METRICS_MUTEX = Mutex.new
+METRICS = {
+  requests_total: 0,
+  requests_by_route: Hash.new(0),
+  responses_by_status: Hash.new(0),
+  request_duration_ms_total: 0.0,
+  request_duration_ms_max: 0.0,
+  auth_failures_total: 0,
+  rate_limit_hits_total: 0
+}
+REQUIRED_TABLES = %w[
+  users
+  biometric_profiles
+  access_logs
+  user_sessions
+  auth_login_attempts
+  user_score_history
+  user_score_thresholds
+  audit_events
+  biometric_attempts
+  evaluation_reports
+].freeze
 
 REDIS_CLIENT = begin
   if REDIS_URL.empty?
@@ -95,6 +130,8 @@ rescue => e
 end
 
 before do
+  request.env['BIOKEY_REQUEST_STARTED_AT'] = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
   request_id = request.env['HTTP_X_REQUEST_ID']
   request_id = SecureRandom.hex(12) if request_id.nil? || request_id.strip.empty?
 
@@ -126,6 +163,27 @@ before do
       content_type :json
       halt 426, json_error('HTTPS required for this environment', 426, 'HTTPS_REQUIRED')
     end
+  end
+end
+
+after do
+  started_at = request.env['BIOKEY_REQUEST_STARTED_AT']
+  duration_ms = if started_at
+                  (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000.0
+                else
+                  0.0
+                end
+
+  route_key = request.path_info.to_s
+  route_key = '/v1/login' if route_key.end_with?('/login')
+  route_key = '/v1/train' if route_key.end_with?('/train')
+
+  METRICS_MUTEX.synchronize do
+    METRICS[:requests_total] += 1
+    METRICS[:requests_by_route][route_key] += 1
+    METRICS[:responses_by_status][response.status.to_s] += 1
+    METRICS[:request_duration_ms_total] += duration_ms
+    METRICS[:request_duration_ms_max] = [METRICS[:request_duration_ms_max], duration_ms].max
   end
 end
 
@@ -354,20 +412,7 @@ def trusted_proxy_request?
 end
 
 def ensure_required_tables!
-  required_tables = %w[
-    users
-    biometric_profiles
-    access_logs
-    user_sessions
-    auth_login_attempts
-    user_score_history
-    user_score_thresholds
-    audit_events
-    biometric_attempts
-    evaluation_reports
-  ]
-
-  missing = required_tables.select do |table_name|
+  missing = REQUIRED_TABLES.select do |table_name|
     DB.exec_params('SELECT to_regclass($1) AS table_ref', [table_name])[0]['table_ref'].nil?
   end
 
@@ -423,6 +468,41 @@ def verify_admin_password(password)
   BCrypt::Password.new(admin_password_hash) == password
 rescue BCrypt::Errors::InvalidHash
   false
+end
+
+def mark_auth_failure!
+  METRICS_MUTEX.synchronize { METRICS[:auth_failures_total] += 1 }
+end
+
+def metrics_snapshot
+  METRICS_MUTEX.synchronize do
+    {
+      requests_total: METRICS[:requests_total],
+      requests_by_route: METRICS[:requests_by_route].dup,
+      responses_by_status: METRICS[:responses_by_status].dup,
+      request_duration_ms_total: METRICS[:request_duration_ms_total],
+      request_duration_ms_max: METRICS[:request_duration_ms_max],
+      auth_failures_total: METRICS[:auth_failures_total],
+      rate_limit_hits_total: METRICS[:rate_limit_hits_total]
+    }
+  end
+end
+
+def schema_readiness
+  missing = REQUIRED_TABLES.select do |table_name|
+    DB.exec_params('SELECT to_regclass($1) AS table_ref', [table_name])[0]['table_ref'].nil?
+  end
+
+  {
+    ready: missing.empty?,
+    missing_tables: missing
+  }
+rescue PG::Error => e
+  {
+    ready: false,
+    missing_tables: REQUIRED_TABLES,
+    error: e.message
+  }
 end
 
 def require_dashboard_read!
@@ -681,6 +761,8 @@ end
 
 def require_rate_limit!(scope:, key:, limit:, window_seconds:, message:, code:)
   return unless rate_limited?(scope, key, limit: limit, window_seconds: window_seconds)
+
+  METRICS_MUTEX.synchronize { METRICS[:rate_limit_hits_total] += 1 }
 
   halt 429, json_error(message, 429, code)
 end
@@ -1309,6 +1391,7 @@ post '/auth/login' do
       failing_user_id = result.ntuples > 0 ? result[0]['id'].to_i : nil
       record_login_attempt(username, ip_address, false)
       log_access_event(user_id: failing_user_id, verdict: 'AUTH_FAIL', score: nil)
+      mark_auth_failure!
       return json_error('Invalid credentials', 401)
     end
 
@@ -1359,7 +1442,10 @@ post '/auth/intelligence' do
   content_type :json
   begin
     session = active_session_for(bearer_token)
-    return json_error('Unauthorized', 401) if session.nil?
+    if session.nil?
+      mark_auth_failure!
+      return json_error('Unauthorized', 401)
+    end
 
     data = JSON.parse(request.body.read)
     timings = data['timings']
@@ -1391,7 +1477,10 @@ get '/auth/profile' do
   content_type :json
   begin
     session = active_session_for(bearer_token)
-    return json_error('Unauthorized', 401) if session.nil?
+    if session.nil?
+      mark_auth_failure!
+      return json_error('Unauthorized', 401)
+    end
 
     user_id = session['user_id'].to_i
     profile_count = DB.exec_params(
@@ -1418,7 +1507,10 @@ get '/auth/export-data' do
   content_type :json
   begin
     session = active_session_for(bearer_token)
-    return json_error('Unauthorized', 401) if session.nil?
+    if session.nil?
+      mark_auth_failure!
+      return json_error('Unauthorized', 401)
+    end
 
     user_id = session['user_id'].to_i
 
@@ -1469,7 +1561,10 @@ post '/auth/consent' do
   content_type :json
   begin
     session = active_session_for(bearer_token)
-    return json_error('Unauthorized', 401) if session.nil?
+    if session.nil?
+      mark_auth_failure!
+      return json_error('Unauthorized', 401)
+    end
 
     payload = JSON.parse(request.body.read)
     consent = payload['consent_biometric']
@@ -1531,6 +1626,7 @@ post '/auth/logout' do
     token = bearer_token
     if token.nil?
       log_access_event(user_id: nil, verdict: 'LOG_FAIL', score: nil)
+      mark_auth_failure!
       return json_error('Missing authorization token', 401)
     end
 
@@ -1559,12 +1655,14 @@ post '/auth/refresh' do
     token = bearer_token
     if token.nil?
       log_access_event(user_id: nil, verdict: 'REF_FAIL', score: nil)
+      mark_auth_failure!
       return json_error('Missing authorization token', 401)
     end
 
     session = active_session_for(token)
     if session.nil?
       log_access_event(user_id: nil, verdict: 'REF_FAIL', score: nil)
+      mark_auth_failure!
       return json_error('Unauthorized', 401)
     end
 
@@ -1582,6 +1680,7 @@ post '/auth/refresh' do
 
     if updated.cmd_tuples == 0
       log_access_event(user_id: nil, verdict: 'REF_FAIL', score: nil)
+      mark_auth_failure!
       return json_error('Unauthorized', 401)
     end
 
@@ -1614,7 +1713,10 @@ end
 
 def require_authenticated_api_session!
   session = authenticated_api_session
-  halt 401, json_error('Unauthorized', 401, 'UNAUTHORIZED') if session.nil?
+  if session.nil?
+    mark_auth_failure!
+    halt 401, json_error('Unauthorized', 401, 'UNAUTHORIZED')
+  end
   session
 end
 
@@ -2291,8 +2393,7 @@ post '/admin/api/apply-retention' do
     code: 'ADMIN_RATE_LIMIT'
   )
 
-  retention_days = ENV.fetch('DATA_RETENTION_DAYS', '365').to_i
-  retention_days = 30 if retention_days < 30
+  retention_days = DATA_RETENTION_DAYS
 
   deleted_attempts = DB.exec_params(
     "DELETE FROM biometric_attempts WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
@@ -2332,6 +2433,63 @@ end
 get '/health' do
   content_type :json
   json_success({ status: 'ok' })
+end
+
+get '/ready' do
+  content_type :json
+
+  db_ok = begin
+    DB.exec('SELECT 1')
+    true
+  rescue
+    false
+  end
+
+  redis_ok = if REDIS_URL.empty?
+               'disabled'
+             else
+               begin
+                 REDIS_CLIENT&.ping == 'PONG' ? 'ok' : 'unavailable'
+               rescue
+                 'unavailable'
+               end
+             end
+
+  schema = schema_readiness
+  is_ready = db_ok && schema[:ready] && (redis_ok == 'ok' || redis_ok == 'disabled')
+  status_code = is_ready ? 200 : 503
+
+  json_success({
+    status: is_ready ? 'ready' : 'not_ready',
+    checks: {
+      database: db_ok ? 'ok' : 'failed',
+      redis: redis_ok,
+      schema: schema
+    }
+  }, status_code)
+end
+
+get '/metrics' do
+  allowed = localhost_request? || admin_token_valid? || admin_authenticated?
+  halt 403, json_error('Metrics access denied', 403, 'METRICS_FORBIDDEN') unless allowed
+
+  content_type 'text/plain'
+  snapshot = metrics_snapshot
+  avg_ms = snapshot[:requests_total].zero? ? 0.0 : (snapshot[:request_duration_ms_total] / snapshot[:requests_total])
+
+  lines = []
+  lines << "biokey_requests_total #{snapshot[:requests_total]}"
+  lines << "biokey_request_duration_ms_avg #{format('%.2f', avg_ms)}"
+  lines << "biokey_request_duration_ms_max #{format('%.2f', snapshot[:request_duration_ms_max])}"
+  lines << "biokey_auth_failures_total #{snapshot[:auth_failures_total]}"
+  lines << "biokey_rate_limit_hits_total #{snapshot[:rate_limit_hits_total]}"
+
+  snapshot[:responses_by_status].each do |status_code, count|
+    lines << "biokey_responses_total{status=\"#{status_code}\"} #{count}"
+  end
+
+  lines << ''
+  lines.join("\n")
 end
 
 options '*' do
