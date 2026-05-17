@@ -238,6 +238,14 @@ On push/PR to `main`:
 - Session tokens are stored as SHA-256 digests at rest (token hashing with pepper).
 - With `REDIS_URL` set, rate limiting and admin async jobs are coordinated across processes.
 
+Additional production guidance:
+
+- Threat model: `docs/threat_model.md`
+- Monitoring and alerting: `docs/monitoring_alerting.md`
+- Operations maturity plan: `docs/ops_maturity.md`
+- Automated dependency updates: `.github/dependabot.yml`
+- Weekly security workflow: `.github/workflows/security-maintenance.yml`
+
 ## Performance Gate
 
 CI includes a lightweight backend performance gate script:

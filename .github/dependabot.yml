@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: "bundler"
+    directory: "/backend-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:30"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "ci"
+
+  - package-ecosystem: "gradle"
+    directory: "/android-client"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "android"

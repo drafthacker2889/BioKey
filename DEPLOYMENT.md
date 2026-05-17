@@ -129,6 +129,7 @@ API_BIND=0.0.0.0
 APP_ENV=production
 APP_SESSION_SECRET=<generate_with_SecureRandom.hex(32)>
 APP_REQUIRE_HTTPS=true
+APP_ALLOWED_HOSTS=api.example.com,admin.example.com
 REQUIRE_ADMIN_TOKEN_HASH=true
 ADMIN_TOKEN_HASH=<sha256_of_strong_admin_token>
 REDIS_URL=redis://redis:6379/0
@@ -257,6 +258,11 @@ Monitor key metrics:
 
 CI also runs a release smoke/performance gate on backend changes using `backend-server/tools/perf_smoke_gate.rb`.
 
+See also:
+- `docs/monitoring_alerting.md`
+- `docs/threat_model.md`
+- `docs/ops_maturity.md`
+
 ---
 
 ## Security Hardening
@@ -269,6 +275,10 @@ APP_REQUIRE_HTTPS=true
 ```
 
 The server will reject non-HTTPS requests with HTTP 426.
+
+### Host Allowlist
+
+In production, set `APP_ALLOWED_HOSTS` to explicit public hostnames. Requests with unexpected Host headers are rejected.
 
 ### Distributed Rate Limiting and Async Jobs
 

@@ -1,0 +1,53 @@
+name: Security Maintenance
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  ruby-dependency-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: backend-server
+
+      - name: Run bundle-audit
+        run: |
+          gem install bundler-audit
+          bundle-audit update
+          bundle-audit check
+
+  android-build-sanity:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-client
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Dependency resolution smoke check
+        run: ./gradlew :app:dependencies --no-daemon

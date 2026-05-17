@@ -68,12 +68,16 @@ BIOMETRIC_TRAIN_RATE_LIMIT_MAX = ENV.fetch('BIOMETRIC_TRAIN_RATE_LIMIT_MAX', '15
 ADMIN_API_RATE_LIMIT_MAX = ENV.fetch('ADMIN_API_RATE_LIMIT_MAX', '60').to_i
 ADMIN_API_RATE_LIMIT_WINDOW_SECONDS = ENV.fetch('ADMIN_API_RATE_LIMIT_WINDOW_SECONDS', '60').to_i
 APP_ALLOWED_ORIGINS = ENV.fetch('APP_ALLOWED_ORIGINS', '').split(',').map(&:strip).reject(&:empty?)
+APP_ALLOWED_HOSTS = ENV.fetch('APP_ALLOWED_HOSTS', '').split(',').map(&:strip).reject(&:empty?)
 TIMING_KEY_PAIR_REGEX = /\A[a-zA-Z0-9:_-]{1,16}\z/
 TYPING_EVENT_TYPE_ALLOWLIST = %w[KEYDOWN KEYUP INPUT BACKSPACE DELETE PASTE CUT FOCUS BLUR SUBMIT COMPOSITIONSTART COMPOSITIONEND].freeze
 REDIS_URL = ENV['REDIS_URL'].to_s.strip
 ENABLE_ASYNC_ADMIN_JOBS = ENV.fetch('ENABLE_ASYNC_ADMIN_JOBS', 'true') == 'true'
 REQUIRE_ADMIN_TOKEN_HASH = ENV.fetch('REQUIRE_ADMIN_TOKEN_HASH', APP_ENV == 'production' ? 'true' : 'false') == 'true'
 DATA_RETENTION_DAYS = ENV.fetch('DATA_RETENTION_DAYS', '365').to_i.clamp(30, 3650)
+
+set :protection, true
+set :show_exceptions, APP_ENV == 'development'
 
 set :sessions,
     key: 'biokey.session',
@@ -85,6 +89,10 @@ set :sessions,
 
 if APP_ENV == 'production' && !APP_REQUIRE_HTTPS
   abort('APP_REQUIRE_HTTPS=true is required in production')
+end
+
+if APP_ENV == 'production' && APP_ALLOWED_HOSTS.empty?
+  abort('APP_ALLOWED_HOSTS must include expected public hostnames in production')
 end
 
 if REQUIRE_ADMIN_TOKEN_HASH && !ENV['ADMIN_TOKEN_HASH'].to_s.match?(/\A[0-9a-f]{64}\z/)
@@ -144,6 +152,15 @@ before do
   headers 'X-Content-Type-Options' => 'nosniff'
   headers 'X-Frame-Options' => 'DENY'
   headers 'Referrer-Policy' => 'no-referrer'
+  headers 'Permissions-Policy' => 'geolocation=(), microphone=(), camera=()'
+
+  if !APP_ALLOWED_HOSTS.empty?
+    incoming_host = request.host.to_s.downcase
+    unless APP_ALLOWED_HOSTS.include?(incoming_host)
+      content_type :json
+      halt 400, json_error('Invalid Host header', 400, 'INVALID_HOST')
+    end
+  end
 
   origin = request.env['HTTP_ORIGIN'].to_s
   if !origin.empty? && APP_ALLOWED_ORIGINS.include?(origin)
