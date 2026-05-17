@@ -16,7 +16,7 @@ GEM
     logger (1.7.0)
     method_source (1.1.0)
     minitest (5.27.0)
-    mocha (2.8.2)
+    mocha (3.1.0)
       ruby2_keywords (>= 0.0.5)
     multi_json (1.20.0)
     mustermann (3.0.4)
@@ -88,7 +88,7 @@ DEPENDENCIES
   ffi (~> 1.15)
   json (~> 2.19, >= 2.19.2)
   minitest (~> 5.18)
-  mocha (~> 2.0)
+  mocha (~> 3.1)
   pg (~> 1.5)
   pry (~> 0.14)
   puma (~> 7.2)
@@ -105,6 +105,7 @@ DEPENDENCIES
 CHECKSUMS
   base64 (0.3.0) sha256=27337aeabad6ffae05c265c450490628ef3ebd4b67be58257393227588f5a97b
   bcrypt (3.1.22) sha256=1f0072e88c2d705d94aff7f2c5cb02eb3f1ec4b8368671e19112527489f29032
+  bundler (4.0.11) sha256=5bcec0fb78302e48d02ee46f10ee6e6942be647ba5b44a6d1ddfda9a240ce785
   coderay (1.1.3) sha256=dc530018a4684512f8f38143cd2a096c9f02a1fc2459edcfe534787a7fc77d4b
   connection_pool (3.0.2) sha256=33fff5ba71a12d2aa26cb72b1db8bba2a1a01823559fb01d29eb74c286e62e0a
   csv (3.3.5) sha256=6e5134ac3383ef728b7f02725d9872934f523cb40b961479f69cf3afa6c8e73f
@@ -118,7 +119,7 @@ CHECKSUMS
   logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
   method_source (1.1.0) sha256=181301c9c45b731b4769bc81e8860e72f9161ad7d66dd99103c9ab84f560f5c5
   minitest (5.27.0) sha256=2d3b17f8a36fe7801c1adcffdbc38233b938eb0b4966e97a6739055a45fa77d5
-  mocha (2.8.2) sha256=1f77e729db47e72b4ef776461ce20caeec2572ffdf23365b0a03608fee8f4eee
+  mocha (3.1.0) sha256=75f42d69ebfb1f10b32489dff8f8431d37a418120ecdfc07afe3bc183d4e1d56
   multi_json (1.20.0) sha256=c64106fae5114bd7f388d42d7b52ebb83d7726426d47a35ad5099e35bb923e41
   mustermann (3.0.4) sha256=85fadcb6b3c6493a8b511b42426f904b7f27b282835502233dd154daab13aa22
   nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
