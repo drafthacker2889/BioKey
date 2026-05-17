@@ -71,7 +71,7 @@ jobs:
           gem install brakeman bundler-audit
 
       - name: Brakeman SAST
-        run: brakeman -q -w2 -A
+        run: brakeman -q -w2 -A --force .
 
       - name: Dependency audit
         run: |

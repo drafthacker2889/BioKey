@@ -50,7 +50,17 @@ jobs:
         PGPASSWORD: postgres
       run: |
         psql -h localhost -U postgres -c "CREATE DATABASE biokey_test;" || true
-        psql -h localhost -U postgres -d biokey_test -f ../database/schema.sql
+
+    - name: Run migrations
+      working-directory: backend-server
+      env:
+        DB_HOST: localhost
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        DB_NAME: biokey_test
+        APP_ENV: test
+        RACK_ENV: test
+      run: bundle exec ruby db/migrate.rb
     
     - name: Run tests
       working-directory: backend-server
