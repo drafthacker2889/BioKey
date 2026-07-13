@@ -34,7 +34,7 @@ end
 # Development
 group :development do
   gem 'pry', '~> 0.14'  # REPL for debugging
-  gem 'ruby-lsp', '~> 0.14'  # Language server
+  gem 'ruby-lsp', '~> 0.26'  # Language server
 end
 
 # Production monitoring (optional, can enable later)
