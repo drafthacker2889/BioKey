@@ -12,7 +12,7 @@ gem 'rack-session', '>= 2.1.2'
 
 # Data & Serialization
 gem 'json', '~> 2.19', '>= 2.19.2'
-gem 'csv', '~> 3.2'
+gem 'csv', '~> 3.3'
 gem 'pg', '~> 1.5', require: 'pg'
 gem 'redis', '~> 5.2'
 
